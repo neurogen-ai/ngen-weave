@@ -18,7 +18,7 @@ Files touched:
 - `design/distribution.md`, `design/collab-editing.md` (**new**)
 - `../ngen-weave-web/`: Argo export view, workspace switcher, live review sessions, collaborative editor client
 
-Depends on: `releases/post-1.0.md` (requirements, wins on nothing because `product/PRD.md` wins overall), `product/PRD.md` (decision log, especially the LangGraph-wrapped-not-exported and Argo-compiles-from-serialized-definitions decisions), `releases/v1.0.md` explicit-outs, and module shapes fixed by `implementation/v0.4.md` (lossless storage format), `implementation/v0.5.md` Steps 2–4 (plugin loading, `NODE_KINDS`, service resolution), `implementation/v0.6.md` Steps 1–8 (tables, async stores, auth matrix), `implementation/v1.0.md` Step 1 (versioned routing, contract doc).
+Depends on: `releases/post-1.0.md` (requirements, wins on nothing because `product/PRD.md` wins overall), `product/PRD.md` (decision log, especially the LangGraph-wrapped-not-exported and Argo-compiles-from-serialized-definitions decisions), `releases/v1.0.md` explicit-outs, and module shapes fixed by `implementation/v0.4.md` (data-only storage format), `implementation/v0.5.md` Steps 2–4 (plugin loading, `NODE_KINDS`, service resolution), `implementation/v0.6.md` Steps 1–11 (tables, async stores, auth matrix, collaboration slice), `implementation/v1.0.md` Step 1 (versioned routing, contract doc).
 
 Conventions inherited unchanged: Python ≥3.12, uv workspace, pytest with fakes instead of network except `live`-marked tests, ruff, conventional commits, one commit per step, full non-live suite green before committing, web repo pnpm/Vitest/Playwright.
 
@@ -42,7 +42,7 @@ Global out of scope for every step (per `releases/post-1.0.md`): Temporal as a b
 7. Tickets gain assignee queues filtered by role; a reviewer sees their queue and picks up work.
 8. Multiple humans occupy one review artifact concurrently: each sees who is present and each submission lands without clobbering others (multi-reviewer completion semantics from v0.5 Step 8 stay authoritative).
 9. Notification rules target workspace groups, not just individuals.
-10. Two people edit the same workflow definition in ngen-weave-web simultaneously; both clients converge and persistence writes the lossless storage format. The OT-vs-CRDT mechanism is chosen once, by experiment, in Step 11, and recorded in `design/collab-editing.md`.
+10. Two people edit the same workflow definition in ngen-weave-web simultaneously; both clients converge and persistence writes the data-only storage format. The OT-vs-CRDT mechanism is chosen once, by experiment, in Step 11, and recorded in `design/collab-editing.md`.
 
 ### v1.3+: vertical packs
 
@@ -104,7 +104,7 @@ One sentence each; these are the load-bearing choices.
 - **Retry/priority carried on the node's serialized metadata and translated per-backend inside renderers/dispatchers** absorbs scheduling-gap changes (deadlines, queues) as metadata fields plus one translation site per backend.
 - **`WorkspaceScope` composed into the existing `ProjectScope` dependency (scope gains a field, callers unchanged, per the v1.0 abstraction contract)** absorbs deeper nesting (organizations) later without touching routes.
 - **Review sessions as a server-held session object keyed by artifact id, with submissions funneled through one merge function before completion validation** absorbs new concurrency shapes (watchers, locks) inside the session object; the artifact schema and resume semantics do not move.
-- **Collab editing behind one relay boundary: clients speak the mechanism's op/document protocol to `/api/v1/collab/{definition}`, persistence subscribes to committed snapshots and writes the lossless format** absorbs the OT/CRDT winner (and any later replacement) without re-touching editor features, storage, or validation.
+- **Collab editing behind one relay boundary: clients speak the mechanism's op/document protocol to `/api/v1/collab/{definition}`, persistence subscribes to committed snapshots and writes the data-only format** absorbs the OT/CRDT winner (and any later replacement) without re-touching editor features, storage, or validation.
 - **Packs as pure plugin consumers constrained to published seams (entry points, `NODE_KINDS`, service resolution, HTTP API)** absorbs new verticals entirely outside the monorepo; a required core change is by definition a bug report on a seam.
 
 ---
@@ -459,7 +459,7 @@ Experiments fixed here, both run, both measured:
 1. **CRDT spike**: Yjs `Y.Map` over the definition document model, two Yjs `WebsocketProvider` clients against a y-websockets relay, concurrent edits to the same node's fields and to different nodes, assert convergence and measure op payload size at 100 ops.
 2. **OT spike**: server-authoritative op log (insert/update/remove on the same document model), two clients, same scenarios, assert convergence and measure server sequencing latency.
 
-Rubric, applied mechanically, recorded in the doc: (a) convergence correctness on the scripted conflict scenarios is pass/fail first; (b) if both pass, prefer CRDT/Yjs unless measured op overhead exceeds 3× OT's at the 100-op mark; (c) either way the doc states the chosen mechanism, the losing option's results, and the relay boundary (identical for both, see Step 12). The doc also fixes the document model: the lossless definition format mapped field-for-field into the mechanism's document type, with the mapping owned by one TS module `definitionDoc.ts` in ngen-weave-web.
+Rubric, applied mechanically, recorded in the doc: (a) convergence correctness on the scripted conflict scenarios is pass/fail first; (b) if both pass, prefer CRDT/Yjs unless measured op overhead exceeds 3× OT's at the 100-op mark; (c) either way the doc states the chosen mechanism, the losing option's results, and the relay boundary (identical for both, see Step 12). The doc also fixes the document model: the definition format mapped field-for-field into the mechanism's document type, with the mapping owned by one TS module `definitionDoc.ts` in ngen-weave-web.
 
 Out of scope: shipping any of the spike code into the app, offline editing, presence cursors (nice-to-have listed, explicitly deferred), history/time-travel UI.
 
@@ -477,7 +477,7 @@ Boundary, identical regardless of Step 11's winner:
 
 - Transport: WebSocket `/api/v1/collab/{workflow_name}`, auth via the existing bearer token on upgrade, roles enforced at upgrade time (owner may edit, reviewer/observer read-only).
 - Relay duty: the server forwards ops between connected clients and applies the chosen mechanism's convergence procedure; it holds no business logic (PRD web-API rule).
-- Persistence: the relay commits snapshots on quiescence (no ops for 5s) and on disconnect of the last editor, calling `DefinitionStore.save(text)` with the lossless-format serialization produced by `definitionDoc.ts` inverted; `definition_hash` updates accordingly, and stale-manifest startup checks keep working unchanged.
+- Persistence: the relay commits snapshots on quiescence (no ops for 5s) and on disconnect of the last editor, calling `DefinitionStore.save(text)` with the definition-format serialization produced by `definitionDoc.ts` inverted; `definition_hash` updates accordingly, and stale-manifest startup checks keep working unchanged.
 - Validation: saved snapshots pass through the existing definition validator before commit; an invalid transient state commits nothing and the relay broadcasts a validation-failed notice instead. Editors can therefore produce garbage mid-flight but never persist it.
 - Concurrency with runs: a definition being edited while a run compiles from it reads the last committed snapshot; no locking, documented in `design/collab-editing.md`.
 
