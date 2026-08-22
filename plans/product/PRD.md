@@ -59,16 +59,17 @@ Rules:
 
 - Inputs and outputs are pydantic models validated strictly at every boundary. The same classes generate the JSON Schema that config files, the UI, and MCP tool registration consume.
 - Composite workflows declare structure as class attributes: `children`, `edges`, and per-target `inputs` fan-in maps. Attributes, not builder methods, because the validator, manifest generator, and editor all need to introspect structure without executing code. Their execution is engine-managed subgraph runs, checkpointed and interruptible at any depth. A composite's `run()` delegates to the engine; only leaves override `run()` with arbitrary pure logic (pure function of definition, input, context).
+- Human nodes carry an internal state model between input and output (`state_type`, a pydantic model), editable and prefilled from the incoming context. Submission validates `state_type`; edges out of a human carry branch labels matched against state values (enums generalize control's pass/fail to `"approve"` / `"reject"` / anything). Routing is therefore decided by what the human submitted, without a downstream control node.
 - Worker prompts are a `prompt` class attribute: a template string rendered against validated input fields, overridable by a method when generation needs logic.
 - Human nodes have one edge input, surfaced as read-only `context` in their review artifact; the human's contribution is the artifact's `response` section, which exists only once a person submits and never travels over an edge. Response slots are generated from the output schema's leaf primitive fields (nested models expand recursively, defaults may be left empty, required-without-default blocks completion), and completion validation is `output_type.model_validate(response)`. A per-node `prefill` map seeds slots from the context (paths primarily, callables where logic is needed); prefill fills but never completes an artifact, since human submission is what resumes the run.
-- Every activation emits provenance records (`run_id`, `node_path`, kind, payload) without opt-in. Observers read a frozen six-field metadata object (iterations, tokens in context, tokens total, cost, elapsed time, last output validity) and fire actions: pause, stop, reroute.
+- Every activation emits provenance records (`run_id`, `node_path`, kind, payload) without opt-in. Observers are constructed with a predicate function over a frozen six-field metadata object (iterations, tokens in context, tokens total, cost, elapsed time, last output validity) plus a required description string that serves as the serializable copy of the expression; actions are pause, stop, reroute. ngen-weave does not police predicate code beyond useful errors when the contract is broken.
 - Human nodes interrupt the run and write review artifacts. Resuming means filling the artifact, locally as YAML or remotely as JSON, both carrying identical payloads.
 - Node types ship as Worker, Control, Human, and Agent. AgentNode exists from v0.1 as a declared seam with a mocked executor; real boxed autonomy lands in v0.5, enforced engine-side through PermissionSets (allow/deny lists, budget caps, forced return-to-review points), not by prompting.
 - Registration: a decorator marks workflows in source, a generator step scans declared packages and ships an entry-point manifest with the distribution, the loader reads entry points and fails startup on stale manifests. Plugins register through ordinary package entry points. There is no central manual registry.
 
 ## Configuration and state
 
-Author-facing configuration is YAML naming registered workflows with kwargs; JSON is an accepted equivalent dialect. The thin config layer arrives in v0.1 because standalone deployment needs it; the full lossless serialization used by the editor arrives in v0.4 as the same format widened, never a new syntax. The v0.1 subset stays valid forever; losslessness comes from coverage, not from breaking changes.
+Author-facing configuration is YAML naming registered workflows with kwargs; JSON is an accepted equivalent dialect. The thin config layer arrives in v0.1 because standalone deployment needs it; the editor storage format arrives in v0.4 as the same format widened to cover every serializable field. It serializes data only: structure, schemas, prompt templates, parameters, thresholds. Code-bearing members (`run()` overrides, method-form prompts, callable prefills, observer predicates) appear only as registry-name references to Python-defined workflows; ngen-weave never serializes user code or guarantees its reproducibility. Git owns code history, provenance plus envelope versions own run history. The v0.1 subset stays valid forever; widening comes from coverage, not breaking changes.
 
 Run state starts as one JSON file per run under `.ngen-weave/` (metadata plus the event/provenance stream), written atomically at each transition, always valid, always re-runnable from its contents. Artifacts live content-addressed under `.ngen-weave/projects`, Obsidian-style project trees that accept arbitrary file types. SQLite checkpoints locally; Postgres becomes the canonical store at v0.6, with JSON export retained for reproducibility and handoff.
 
@@ -79,10 +80,11 @@ Run state starts as one JSON file per run under `.ngen-weave/` (metadata plus th
 | v0.1 | Core | Workflow/node classes, pydantic boundaries, recursion native, observers, provenance records, thin YAML config + registry, CLI, canonical code-review example end to end |
 | v0.2 | Exposure | RunService protocol; langgraph-server integration plus basic own-FastAPI implementation; run JSON; MCP server; run/thread API; budget enforcement; AgentNode harness against a real model |
 | v0.3 | Read UI | ngen-weave-web scaffold, graph canvas, detail views, projects browsing, docs site begins |
-| v0.4 | Editor MVP | lossless storage format, UI create/edit/launch/review, artifact diffs, PROV-JSON export, budget controls in UI |
-| v0.5 | Extensibility | plugins via entry points with project-level capability grants, notification plugins (email/text), collaboration slice (multi-reviewer, roles, tickets), boxed agentic autonomy |
-| v0.6 | Platform | Postgres canonical store with Alembic migrations, token auth then roles |
-| 1.0 | Deployed product | standalone server deployment (own FastAPI service), multi-project, editor, remote review, budgets, provenance export, notifications, semver'd API |
+| v0.4 | Editor MVP | data-only storage format, UI create/edit/launch/review, artifact diffs, PROV-JSON export, budget controls in UI |
+| v0.5 | Extensibility | plugins via entry points with project-level capability grants, built-ins as reference registrations, notification reference plugins (email/text), boxed agentic autonomy with MCP loopback |
+| v0.6 | Platform | Postgres canonical store with Alembic migrations (runs, provenance, definitions, tickets, roles), token auth, project/run roles, multi-reviewer human nodes, tickets; run JSON becomes an export format |
+| v0.7 | Consolidation | retire the langgraph-server adapter, external document links, deferred cleanup |
+| 1.0 | Deployed product | standalone server deployment (own FastAPI service), multi-project, editor, remote review, budgets, provenance export, notifications, container volume mounting and artifact-store configuration, semver'd API |
 | 1.1 | Distribution | Argo export target, remote node dispatch |
 | 1.2 | Collaboration | full team features |
 | 1.3+ | Verticals | coding IDE pack first, research pack after |
@@ -101,7 +103,11 @@ Kept here because these questions were expensive to settle and will be expensive
 - Generics dropped. Plain `input_type`/`output_type` class attributes give the same guarantees without runtime type-parameter resolution.
 - LangGraph wrapped directly, never exported to. No compile step between definitions and execution until Argo (1.1), which compiles from serialized definitions.
 - Flask rejected (WSGI). FastAPI throughout; async has nothing to do with Python version, and 3.12 is the floor until pydantic-core and langgraph officially support newer releases.
-- langgraph-server evaluated first behind RunService, but our own FastAPI implementation is required by 1.0 and grows incrementally from v0.2 so the switch is a config change.
+- langgraph-server evaluated first behind RunService, but our own FastAPI implementation is required by 1.0 and grows incrementally from v0.2 so the switch is a config change. Both implementations ship through v0.6 to keep development testable; a dedicated v0.7 step retires the adapter rather than folding its deletion into 1.0.
+- Serialization covers data only. User code is referenced by registry name, never serialized, never promised reproducible. Reproducibility of runs comes from primitive names, record-envelope versions, and provenance records.
+- Observer predicates are ordinary functions handed to the `Observer` constructor; the required description string is their serializable copy. We provide sensible APIs and clear errors, not policing of user code.
+- Human routing reads the submitted internal state; branch labels on human out-edges match state values. No mandatory downstream control node per review.
+- Artifact blob stores are configurable from 1.0 (local disk default, object-storage-ready); container deployments mount volumes explicitly. Multi-project servers never depend on implicit local directories for blobs.
 - One JSON file per run replaces JSONL streams until the database takes over. Files stay atomic-write and complete at every transition.
 - Provenance is emitted unconditionally; log verbosity varies, silence does not.
 - No API backwards compatibility before 1.0. After 1.0, both repos' public surfaces follow semver.
