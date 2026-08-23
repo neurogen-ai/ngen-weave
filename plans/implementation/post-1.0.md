@@ -31,7 +31,7 @@ Global out of scope for every step (per `releases/post-1.0.md`): Temporal as a b
 ### v1.1: distribution
 
 1. A registered workflow compiles to a valid Argo Workflows spec purely from its serialized definition (`DefinitionStore.load` output), with zero import of live Python objects at compile time.
-2. The mapping is exactly the release doc's: workers become container templates, control booleans become conditional DAG edges, human nodes become `suspend` templates resumed through the checkpoint store, fan-in maps become DAG dependencies.
+2. The mapping is exactly the release doc's: workers become container templates, control booleans become conditional DAG edges, human nodes become `suspend` templates resumed through the checkpoint store, nodes fed by multiple parents get ordinary DAG dependencies.
 3. Node dispatch has one seam: the engine asks a `DispatchBackend` where/how to execute a leaf activation. The local in-process backend is the default and the only shipped behavior until configured otherwise; an Argo backend runs leaves as pods whose results land back through `RunRepo`.
 4. Gaps Argo leaves (cross-node retry policy, priority) are bridged as fields on the compiled spec, not as a second scheduler.
 5. `ngen-weave compile <workflow> --target argo -o out/` works offline from the CLI; `POST /api/v1/workflows/{name}/compile` serves the same output.
@@ -54,7 +54,7 @@ Global out of scope for every step (per `releases/post-1.0.md`): Temporal as a b
 From `releases/post-1.0.md`, verbatim in intent:
 
 **v1.1**
-1. A two-level composite with worker → control → human → fan-in compiles to Argo, applies against a real cluster (live-marked), suspends at the human node, resumes when the artifact response is written to the checkpoint store, and completes with provenance records identical in shape to local-mode records for the same run.
+1. A two-level composite with worker → control → human → fan-in merge compiles to Argo, applies against a real cluster (live-marked), suspends at the human node, resumes when the artifact response is written to the checkpoint store, and completes with provenance records identical in shape to local-mode records for the same run.
 2. Compiling reads only the serialized definition: the compile test suite imports no workflow modules and passes with the packages' workflow sources removed from the import graph (enforced by test, Step 3).
 3. The same run executes end to end locally (no Argo) after this release, proving dispatch is behind the seam and defaulted off.
 4. Retry count and priority set on a node appear in the compiled spec as Argo `retryStrategy` / `priority` without engine changes elsewhere.
@@ -117,7 +117,7 @@ One sentence each; these are the load-bearing choices.
 
 Content fixed here so the implementing agent writes it in intent:
 
-- Mapping table (release-doc rules made concrete): Worker/Agent → `container` template running `ngen-weave exec-node` with the definition hash, node path, and input passed as arguments/env; Control → DAG edge `when:` expressions compiled from the control node's boolean outputs; Human → `suspend` template; resumption happens out-of-band when the artifact response reaches the checkpoint store, which the watcher pod observes; composite children → nested DAG with fan-in expressed as ordinary DAG dependencies onto the aggregated inputs.
+- Mapping table (release-doc rules made concrete): Worker/Agent → `container` template running `ngen-weave exec-node` with the definition hash, node path, and input passed as arguments/env; Control → DAG edge `when:` expressions compiled from the control node's boolean outputs; Human → `suspend` template; resumption happens out-of-band when the artifact response reaches the checkpoint store, which the watcher pod observes; composite children → nested DAG with multi-parent targets expressed as ordinary DAG dependencies onto the aggregated inputs.
 - Compile-time input contract: everything comes from `WorkflowDefinition` (v0.4 format) plus static config; the compiler must not import workflow Python.
 - Runtime contract: remote leaves write results as checkpoint/provenance records through the same stores the server uses; no direct worker-to-worker calls ever.
 - Supervision boundary (release-doc rule, made concrete): observers and budget hooks fire only at activation boundaries — inside `exec-node`'s wrapper around the leaf, or at engine-owned transitions like human resume. The mapping table records where each hook fires per node kind; a definition needing supervision finer than that raises `CompileError` rather than silently degrading.
@@ -205,7 +205,7 @@ Renderer bodies, decided here:
 - **Worker/Agent** → one `container` template per node: image from the definition's `image` metadata field (default `ghcr.io/<org>/ngen-weave-worker:<version>`), command `["ngen-weave", "exec-node", "--definition-hash", ..., "--node-path", ...]`, input injected via env `NGW_NODE_INPUT` (JSON). `retry`/`priority` metadata translate to `retryStrategy.limit` and `priority`.
 - **Control** → no own template body; contributes `when:` conditions on outgoing DAG edges, one per boolean output branch, referencing the control task's output parameter.
 - **Human** → `suspend` template with `suspend: {}` (indefinite); the accompanying `activeDeadlineSeconds` only if the definition carries a timeout metadata field. Resumption is external (Step 4 watcher).
-- **Composite** → `dag` template recursing through children; fan-in maps become named input parameters on the child dag task with `valueFrom.parameter` referencing upstream tasks.
+- **Composite** → `dag` template recursing through children; multi-parent inputs become named input parameters on the child dag task with `valueFrom.parameter` referencing upstream tasks.
 - Edge assembly: `ArgoTarget.compile` builds one top-level `Workflow` manifest (`apiVersion: argoproj.io/v1alpha1`, `kind: Workflow`, entrypoint = root dag), serializes each `CompiledArtifact.files` entry as YAML.
 
 Serialization-only proof, `test_no_live_objects.py`: builds a definition dict literal in the test, monkeypatches `sys.modules` entries for a sentinel workflow package to raise on import, then asserts `compile_definition(...)` succeeds. This pins the PRD decision mechanically.
