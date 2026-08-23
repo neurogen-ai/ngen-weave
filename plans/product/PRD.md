@@ -84,7 +84,7 @@ Run state starts as one JSON file per run under `.ngen-weave/` (metadata plus th
 | v0.5 | Extensibility | plugins via entry points with project-level capability grants, built-ins as reference registrations, notification reference plugins (email/text), boxed agentic autonomy with MCP loopback |
 | v0.6 | Platform | Postgres canonical store with Alembic migrations (runs, provenance, definitions), async store seams; run JSON becomes an export format |
 | v0.7 | Consolidation | retire the langgraph-server adapter, external document links, deferred cleanup |
-| v0.8 | Identity | token auth, project/run roles, multi-reviewer human nodes, tickets, import-project |
+| v0.8 | Identity | WorkOS-backed auth, project/run roles, multi-reviewer human nodes, tickets, import-project |
 | 1.0 | Deployed product | standalone server deployment (own FastAPI service), multi-project, editor, remote review, budgets, provenance export, notifications, container volume mounting and artifact-store configuration, semver'd API |
 | 1.1 | Distribution | Argo export target, remote node dispatch |
 | 1.2 | Collaboration | full team features |
@@ -114,7 +114,7 @@ Kept here because these questions were expensive to settle and will be expensive
 - No API backwards compatibility before 1.0. After 1.0, both repos' public surfaces follow semver.
 - External documents (Google Docs etc.) are linked, never stored. Their provenance belongs to their providers. Local-first file-based projects remain fully supported permanently.
 - Scheduling is launch-now until we own the service layer; cron parity is not allowed to block the move off langgraph-server.
-- Collaboration features (simultaneous editing, team workspaces) start post-1.0. Roles arrive with auth at v0.8; the database lands alone at v0.6 so the storage migration is never entangled with identity work.
+- Collaboration features (simultaneous editing, team workspaces) start post-1.0. Roles arrive with auth at v0.8; the database lands alone at v0.6 so the storage migration is never entangled with identity work. Auth itself is delegated to WorkOS (AuthKit-hosted login, SDK token verification): ngen-weave keeps only local role rows and a `Principal` boundary, and never builds user management, password handling, or session machinery.
 
 ## What would make this fail
 
