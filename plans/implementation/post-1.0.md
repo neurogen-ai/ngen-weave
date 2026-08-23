@@ -583,7 +583,7 @@ Commits: `feat(pack-research): search providers`, `feat(pack-research): literatu
 
 Changelog entries for v1.1–v1.3, docs index updates (distribution, collaboration, packs guides linked from the MkDocs nav), version bumps across packages, `plans/releases/post-1.0.md` checkboxes reviewed against the success-criteria e2e names.
 
-Final verification sweep: `uv run pytest -m 'not live' && uv run ruff check .`; live suites (`argodespatch`, Postgres, Forgejo fixture) where environments exist; web `pnpm lint && pnpm test && pnpm build`; fresh-clone smoke: install server + both packs, compose up, compile `repo_review`, launch against a fixture repo, answer review from a second token, export PROV-JSON with research-profile annotations absent (they are pack-scoped) but run JSON byte-compatible with the v0.6 writer.
+Final verification sweep: `uv run pytest -m 'not live' && uv run ruff check .`; live suites (`argodespatch`, Postgres, Forgejo fixture) where environments exist; web `pnpm lint && pnpm test && pnpm build`; fresh-clone smoke: install server + both packs, compose up, compile `repo_review`, launch against a fixture repo, answer review from a second token, export PROV-JSON with research-profile annotations absent (they are pack-scoped) but run JSON byte-compatible with the shared v0.2 writer.
 
 Commits: `chore: v1.3 changelog and version bumps`, `docs: nav and index updates`
 

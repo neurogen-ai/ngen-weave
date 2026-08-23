@@ -72,18 +72,18 @@ Rules:
 
 Author-facing configuration is YAML referencing registered workflows by class path with kwargs; JSON is an accepted equivalent dialect. The thin config layer arrives in v0.1 because standalone deployment needs it; the editor storage format arrives in v0.4 as the same format widened to cover every serializable field. It serializes data only: structure, schemas, prompt templates, parameters, thresholds. Code-bearing members (`run()` overrides, method-form prompts, observer predicates) appear only as class-path references to Python-defined workflows; ngen-weave never serializes user code or guarantees its reproducibility. Git owns code history, provenance plus envelope versions own run history. The v0.1 subset stays valid forever; widening comes from coverage, not breaking changes.
 
-Run state starts as one JSON file per run under `.ngen-weave/` (metadata plus the event/provenance stream), written atomically at each transition, always valid, always re-runnable from its contents. Artifacts live content-addressed under `.ngen-weave/projects`, Obsidian-style project trees that accept arbitrary file types. SQLite checkpoints locally; Postgres becomes the canonical store at v0.6, with JSON export retained for reproducibility and handoff.
+Run state starts as one JSON file per run under `.ngen-weave/`: metadata plus the event/provenance stream, written atomically at each transition, always re-runnable from its contents. That store lasts exactly through v0.1. When serving arrives at v0.2, the stream moves into a project SQLite database behind the same store interface (one append per record instead of rewriting a growing file), and the single-file JSON becomes an export produced on demand by one writer. Artifacts live content-addressed under `.ngen-weave/projects`, Obsidian-style project trees that accept arbitrary file types. SQLite remains the local store; Postgres takes the role over at v0.6, with the JSON export retained permanently for reproducibility and handoff.
 
 ## Roadmap
 
 | ver | theme | ships |
 |---|---|---|
 | v0.1 | Core | Workflow/node classes, pydantic boundaries, recursion native, provenance records, thin YAML config + registry, CLI, canonical code-review example end to end |
-| v0.2 | Exposure | RunService protocol; own FastAPI serving implementation; run JSON; MCP server; run/thread API; budget enforcement; supervision/observers baked into the scheduler (pause only); AgentNode harness against a real model |
+| v0.2 | Exposure | RunService protocol; own FastAPI serving implementation; SQLite run store with run JSON demoted to an on-demand export; MCP server; run/thread API; budget enforcement; supervision/observers baked into the scheduler (pause only); AgentNode harness against a real model |
 | v0.3 | Read UI | ngen-weave-web scaffold, graph canvas, detail views, projects browsing, docs site begins |
 | v0.4 | Editor MVP | data-only storage format, UI create/edit/launch/review, artifact diffs, PROV-JSON export, budget controls in UI |
 | v0.5 | Extensibility | plugins via entry points with project-level capability grants — node types, services, workflow packs, namespaced API routes, spec-driven UI widgets plus prebuilt component bundles — built-ins as reference registrations, notification reference plugins (email/text), boxed agentic autonomy with MCP loopback |
-| v0.6 | Platform | Postgres canonical store with Alembic migrations (runs, provenance, definitions), async store seams; run JSON becomes an export format |
+| v0.6 | Platform | Postgres canonical store with Alembic migrations (runs, provenance, definitions), async store seams |
 | v0.7 | Consolidation | external document links, deferred cleanup |
 | v0.8 | Identity | WorkOS-backed auth, project/run roles, multi-reviewer human nodes, tickets, import-project |
 | 1.0 | Deployed product | standalone server deployment (own FastAPI service), multi-project, editor, remote review, budgets, provenance export, notifications, container volume mounting and artifact-store configuration, semver'd API |
@@ -115,7 +115,7 @@ Kept here because these questions were expensive to settle and will be expensive
 - Human routing reads the submitted internal state through routers declared in `build()`; there is no separate branch-label vocabulary — branch-map keys are the possible values. No mandatory downstream control node per review.
 - Human artifacts stay simple: flat `state_type` models and path-string prefill only. Nested-model slot expansion and callable prefill were stripped before v0.1 as speculation; they return when a concrete workflow demands them.
 - Artifact blob stores are configurable from 1.0 (local disk default, object-storage-ready); container deployments mount volumes explicitly. Multi-project servers never depend on implicit local directories for blobs.
-- One JSON file per run replaces JSONL streams until the database takes over. Files stay atomic-write and complete at every transition.
+- One JSON file per run shipped in v0.1, replacing JSONL streams: atomic-write, always complete, correct at CLI scale. Whole-file rewrite per transition is quadratic in run length, so when serving arrived the backing moved rather than the interface: from v0.2 the event/provenance stream appends to a project SQLite database behind the same RunStore methods, and the single-file JSON became an on-demand export written by one serializer (`dump_run_json`) whose bytes match the v0.1 files exactly. Early runs therefore stay readable forever, and Postgres at v0.6 inherits the same seam instead of inventing an export format.
 - Provenance is emitted unconditionally; log verbosity varies, silence does not.
 - No API backwards compatibility before 1.0. After 1.0, both repos' public surfaces follow semver.
 - External documents (Google Docs etc.) are linked, never stored. Their provenance belongs to their providers. Local-first file-based projects remain fully supported permanently.
