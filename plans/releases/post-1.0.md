@@ -6,12 +6,14 @@
 
 ngen-weave graphs compile to Argo Workflows the same way they map onto LangGraph: workers become containers, control booleans become conditional DAG edges, human nodes map to `suspend`, fan-in maps to DAG dependencies. Remote node dispatch: workers execute as containers, results return through the checkpoint store. Whatever scheduling gaps Argo leaves (cross-node retries, priority queues) gets bridged rather than rebuilt.
 
-Constraints that make this cheap, already enforced by earlier versions:
+Constraints that make this cheap, built by earlier versions:
 
-- Node execution is a pure function of (definition, input, config); no engine process state access.
-- Run state is externalizable data; checkpoints and provenance live in records any process can read.
+- Node execution is a function of (definition, input, config) with no engine process state access. This holds structurally rather than by policing code: everything code-bearing is a registry-name reference into installed Python packages (the v0.1 rule), so a worker image built from the same distribution carries every reference, and ngen-weave never serializes user code — nothing in a definition is unshippable.
+- Run state is externalizable data; checkpoints and provenance live in records any process can read (one writer, async store seams, Postgres canonical from v0.6).
 - Every backend enters through RunService plus one compile target. Adapters translate; they never extend.
-- Compilation reads serialized workflow definitions, not live Python objects.
+- Compilation reads serialized workflow definitions, not live Python objects (data-only format, v0.4).
+
+Supervision scope for 1.1, stated because it bounds what compiles honestly: observer actions (pause/stop/reroute) and budget checks are engine-side transition hooks. Under a compiled target they evaluate only at activation boundaries — inside the dispatched node's wrapper before and after it runs, and at engine-owned boundaries such as human resume — never mid-edge, because edge transitions belong to the backend scheduler. Dispatch in 1.1 therefore covers leaf workers and human suspend points; composites compile to nested structure the backend executes. Finer-grained supervision than activation boundaries is out of scope until demanded.
 
 Temporal stays a documented alternative backend, not built.
 
