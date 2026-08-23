@@ -525,7 +525,7 @@ packs/ngen-weave-pack-<vertical>/
 │                               #   optionally ngen-weave.compile-targets / dispatch-backends
 ├── src/ngen_weave_pack_<vertical>/
 │   ├── __init__.py             # plugin entry: registration functions only
-│   ├── workflows/              # @workflow-decorated classes
+│   ├── workflows/              # Workflow subclasses
 │   ├── kinds/                  # node subclasses + NodeMeta + renderer registrations
 │   └── services/
 └── tests/
@@ -546,7 +546,7 @@ Commits: `test(core): pack seam conformance harness` (+ any `fix(core):` commits
 Contents, fixed here:
 
 - **Code-graph artifact type**: a node kind `code_graph` (registered via `kinds/`) producing a versioned artifact holding a repo dependency graph (tree-sitter-based extraction, `tree-sitter` + language grammars as pack deps); artifact stored through the ordinary content-addressed VersionLog; UI metadata renders a summary line and links to the artifact blob.
-- **Repository-aware review workflows**: two `@workflow` classes, `repo_review` (graph extraction → per-file review workers fanned out → gate on severity → human review) and `pr_review` (same, seeded from a diff instead of the whole graph). Inputs are pydantic models (`RepoRef{url, ref}, DiffRef{...}`); strictness comes free from core validation.
+- **Repository-aware review workflows**: two `Workflow` subclasses, `repo_review` (graph extraction → per-file review workers fanned out → gate on severity → human review) and `pr_review` (same, seeded from a diff instead of the whole graph). Inputs are pydantic models (`RepoRef{url, ref}, DiffRef{...}`); strictness comes free from core validation.
 - **CI hooks**: server route additions belong to the pack's own FastAPI router mounted by the server's plugin-router hook (if the v0.5 plugin surface lacks router mounting, this is a Step 14 seam fix, made there): `POST /api/v1/hooks/forgejo` and `POST /api/v1/hooks/github`, verifying webhook signatures from project config, mapping PR events to `pr_review` launches with `DiffRef` inputs, and posting findings back as PR comments through the respective API using a token from project config. Findings formatting is one function per provider in the pack.
 - Budget defaults per launch pulled from project budget config; PermissionSets box any AgentNodes used in review workflows (autonomy rules apply to packs identically).
 

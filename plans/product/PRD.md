@@ -47,8 +47,8 @@ Two repos. The backend monorepo publishes `ngen-weave` as one pip distribution (
 The `Workflow` class is the only abstraction that matters. Everything else specializes it.
 
 ```python
-@workflow("code_review")
 class CodeReview(Workflow):
+    name = "code_review"            # unique registry name
     input_type = ReviewInput        # pydantic model
     output_type = ReviewOutput
 
@@ -65,7 +65,7 @@ Rules:
 - Every activation emits provenance records (`run_id`, `node_path`, kind, payload) without opt-in. Observers are constructed with a predicate function over a frozen six-field metadata object (iterations, tokens in context, tokens total, cost, elapsed time, last output validity) plus a required description string that serves as the serializable copy of the expression; actions are pause, stop, reroute, and reroute targets are declared on the observer, never inferred from predicate source. In addition, every workflow may override an internal `observe(metadata)` method evaluated after its declared observers, giving programmatic access to the same actions for cancellation and custom behavior. ngen-weave does not police predicate or method code beyond useful errors when the contract is broken.
 - Human nodes interrupt the run and write review artifacts. Resuming means filling the artifact, locally as YAML or remotely as JSON, both carrying identical payloads.
 - Node types ship as Worker, Control, Human, and Agent. AgentNode exists from v0.1 as a declared seam with a mocked executor; real boxed autonomy lands in v0.5, enforced engine-side through PermissionSets (allow/deny lists, budget caps, forced return-to-review points), not by prompting.
-- Registration: a decorator marks workflows in source, a generator step scans declared packages and ships an entry-point manifest with the distribution, the loader reads entry points and fails startup on stale manifests. Plugins register through ordinary package entry points. There is no central manual registry.
+- Registration: workflows are ordinary `Workflow` subclasses discovered by explicit listing, never by scanning. Distributions declare workflow modules under a `ngen-weave.workflows` entry-point group; projects list modules in `ngen-weave.json`; data-only definition files live in `.ngen-weave/definitions/`. Importing a listed module auto-registers every `Workflow` subclass found there (name = its `name` attribute); duplicates fail loudly. Plugin node kinds and services register through ordinary package entry points. There is no central manual registry, no decorator, and no build-time manifest.
 
 ## Configuration and state
 
@@ -118,4 +118,4 @@ Kept here because these questions were expensive to settle and will be expensive
 
 ## What would make this fail
 
-Named so nobody pretends otherwise. If the recursive Workflow abstraction turns out to make interrupts and cost attribution across nesting levels messy in practice, everything above it gets harder, so v0.1 tests two-level nesting with attribution before anything else builds on it. If the entry-point registration manifest goes stale silently, config breaks confusingly, so hash mismatches fail loudly at startup. And if the web API accretes business logic, the frontend stops being swappable, so reviews grep for logic outside core.
+Named so nobody pretends otherwise. If the recursive Workflow abstraction turns out to make interrupts and cost attribution across nesting levels messy in practice, everything above it gets harder, so v0.1 tests two-level nesting with attribution before anything else builds on it. If two discovery sources ever disagree about a name, config breaks confusingly, so duplicate registrations fail loudly at startup and every consumer resolves names through one merged discovery map. And if the web API accretes business logic, the frontend stops being swappable, so reviews grep for logic outside core.
