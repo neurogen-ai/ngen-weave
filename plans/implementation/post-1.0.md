@@ -122,7 +122,7 @@ Content fixed here so the implementing agent writes it in intent:
 - Runtime contract: remote leaves write results as checkpoint/provenance records through the same stores the server uses; no direct worker-to-worker calls ever.
 - Bridge policy: cross-node retries and priority are per-node serialized metadata fields (`retry: int`, `priority: int | null`) translated by each backend; ngen-weave never runs a scheduler loop of its own.
 - Temporal named as documented alternative, not built (release-doc rule).
-- Cross-reference, do not restate: PRD architecture section, `implementation/v0.4.md` storage format grammar, v1.0 `design/api-contract.md`.
+- Cross-reference, do not restate: PRD architecture section, `implementation/v0.4.md` storage format (JSON Schema model documents), v1.0 `design/api-contract.md`.
 
 Out of scope: any code, UI mockups, cost estimates.
 
