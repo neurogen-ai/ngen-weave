@@ -39,9 +39,9 @@ def register(cls: type[Workflow], source: str) -> None:
     """Register cls under its fully-qualified class path.
 
     Duplicate registration of an already-known path raises ConfigError naming
-    both declaring sources; overlapping discovery is an error, never a silent
-    precedence. Re-listing a module that already loaded is still a duplicate,
-    because the listing itself overlaps with itself.
+    both declaring sources, so every path in the namespace traces to exactly
+    one declaration. Listing one module through two channels, or twice in a
+    single list, produces such a duplicate.
     """
     path = workflow_class_path(cls)
     existing = _REGISTRY.get(path)
