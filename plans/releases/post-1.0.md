@@ -2,6 +2,8 @@
 
 # ngen-weave post-1.0: 1.1, 1.2, 1.3
 
+Standing commitments from 1.0 onward: config and definition files valid at 1.0 stay valid; the format widens by covering more serializable fields, never by breaking changes. Before 1.0 no such promise existed (usage was small enough to reshape with migration notes); from here it binds both repos' public surfaces alongside the semver'd API.
+
 ## v1.1: distribution
 
 ngen-weave graphs compile to Argo Workflows the same way they map onto LangGraph: workers become containers, control booleans become conditional DAG edges, human nodes map to `suspend`, fan-in maps to DAG dependencies. Remote node dispatch: workers execute as containers, results return through the checkpoint store. Whatever scheduling gaps Argo leaves (cross-node retries, priority queues) gets bridged rather than rebuilt.

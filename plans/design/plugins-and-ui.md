@@ -20,7 +20,7 @@ Why spec-driven rather than components from day one: class strings and fetch tar
 - State variation uses full literal alternatives in lookup maps (`{"pass": "border-green-500", ...}`), never string concatenation. Enable-time validation rejects specs whose expected strings cannot be found statically.
 - No per-widget stylesheets and no scoped CSS for rendered elements: Svelte scoping needs compile-time components, and spec markup has none. SvelteKit scoping still covers core's hand-written components as usual.
 - Class collection runs at install/enable/disable time: scan enabled plugins' specs, emit one safelist stylesheet, cache it. Cost is once per registry change, not per request, so many plugins are not a runtime concern. Regeneration shares the hook that writes capability grants. Browser-side JIT rejected: two rendering paths give every bug two hiding places, for a benefit only needed if the static-string rule fails, which validation mostly prevents.
-- Plugin CSS is not policed. A malicious class string executes nothing, and plugins already run arbitrary Python under "sandboxed by convention", so scanning for `fixed inset-0` would be inconsistent theater. Widgets render in a constrained container (clipped, z-index bounded) as hygiene. The remedy for a badly behaved plugin is operational: `ngw plugins disable` / `remove`.
+- Plugin CSS is not policed. A malicious class string executes nothing, and plugins already run arbitrary Python under "sandboxed by convention", so scanning for `fixed inset-0` would be inconsistent theater. Widgets render in a constrained container (clipped, z-index bounded) as hygiene. The remedy for a badly behaved plugin is operational: `ngen-weave plugins disable` / `remove`.
 
 ### Deliberate limits
 
@@ -33,9 +33,9 @@ Spec elements get none of Svelte's compile-time guarantees or fine-grained react
 
 ## Component bundles pulled forward
 
-The post-1.0 escape hatch ships early: a plugin may include prebuilt frontend component bundles compiled at authoring time against the published SDK (`ngw plugin build`), loaded generically into declared, stably named mount slots. Pip still distributes one artifact; the web app never rebuilds and never sees source.
+The post-1.0 escape hatch ships early: a plugin may include prebuilt frontend component bundles compiled at authoring time against the published SDK (`ngen-weave plugin build`), loaded generically into declared, stably named mount slots. Pip still distributes one artifact; the web app never rebuilds and never sees source.
 
-Rejected: labeling plugins "svelte-native" and pulling them into the host's build cycle, even optionally. It makes every plugin install a frontend build event, breaks prebuilt web-app distribution, couples compiled plugins to host internals at their build time, and forks every authoring decision into "spec or component?". Authoring ergonomics live in the SDK + `ngw plugin build`, not in host-build coupling. Mount points are named and stable now because they are the seams these bundles plug into.
+Rejected: labeling plugins "svelte-native" and pulling them into the host's build cycle, even optionally. It makes every plugin install a frontend build event, breaks prebuilt web-app distribution, couples compiled plugins to host internals at their build time, and forks every authoring decision into "spec or component?". Authoring ergonomics live in the SDK + `ngen-weave plugin build`, not in host-build coupling. Mount points are named and stable now because they are the seams these bundles plug into.
 
 ## Open questions
 
