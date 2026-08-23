@@ -112,6 +112,14 @@ def test_broken_module_raises_in_strict_mode(tmp_path, monkeypatch):
         discovery.discover([name])
 
 
+def test_strict_mode_collects_all_import_failures(tmp_path, monkeypatch):
+    first, second = _module_name(), _module_name()
+    _write_module(tmp_path, monkeypatch, first, "raise RuntimeError('boom-one')\n")
+    _write_module(tmp_path, monkeypatch, second, "raise RuntimeError('boom-two')\n")
+    with pytest.raises(ConfigError, match="boom-one.*boom-two"):
+        discovery.discover([first, second])
+
+
 def test_broken_module_skipped_in_tolerant_mode(tmp_path, monkeypatch):
     broken, good = _module_name(), _module_name()
     _write_module(tmp_path, monkeypatch, broken, "raise RuntimeError('boom')\n")

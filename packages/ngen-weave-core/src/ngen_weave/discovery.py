@@ -37,9 +37,10 @@ def discover(
 
     Args:
         modules: Module paths to import, in declaration order.
-        strict: True turns import failures into ConfigError; False skips a
-            failing module and keeps the rest. Duplicate class paths raise in
-            both modes (overlapping sources).
+        strict: True collects import failures across the whole listing and
+            raises them together as ConfigError once every module ran; False
+            skips a failing module and keeps the rest. Duplicate class paths
+            raise in both modes (overlapping sources).
         source: Channel label attached to this call's registrations so
             duplicate errors can name both declaring channels.
 
@@ -52,19 +53,21 @@ def discover(
             path, naming both declaring sources.
     """
     found: dict[str, type[Workflow]] = {}
+    failures: list[str] = []
     for module_name in modules:
         try:
             module = importlib.import_module(module_name)
         except Exception as exc:
             if not strict:
                 continue
-            raise ConfigError(
-                f"failed to import workflow module {module_name!r}: {exc}"
-            ) from exc
+            failures.append(f"{module_name!r}: {exc}")
+            continue
         label = f"{source} ({module_name})"
         for cls in _classes_defined_in(module):
             registry.register(cls, source=label)
             found[workflow_class_path(cls)] = cls
+    if failures:
+        raise ConfigError("failed to import workflow modules: " + "; ".join(failures))
     return found
 
 
