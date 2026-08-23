@@ -3,7 +3,7 @@
 Planned contents, per the documentation hierarchy:
 
 - `system-architecture.md` — components, protocols, data flow (see the diagram in ../product/PRD.md for the current sketch)
-- Per-module designs as modules stabilize: core model and engine, registration/config, serving and RunService, web API contract, storage and provenance, plugins.
+- Per-module designs as modules stabilize: core model and engine, registration/config, serving and RunService, web API contract, storage and provenance, plugins (see plugins-and-ui.md).
 
 Settled elsewhere and recorded in the decision log: observer predicate purity checking was rejected entirely (predicates are user code; we validate declarations and surface errors, we do not police bodies).
 
