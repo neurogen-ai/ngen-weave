@@ -15,4 +15,4 @@ Rule: a design doc exists to record decisions with their reasons, not to spec ev
 |---|---|---|
 | Push vs polling for run screens | v0.4 | decide on evidence once run management UI exists (v0.4 plan reserves this as an amendment decision) |
 
-Settled in implementation planning and recorded there: RunService ↔ langgraph-server identity mapping and langgraph-server packaging friction evidence (`implementation/v0.2.md` Steps 2 and 5).
+Settled in implementation planning and recorded there: nothing currently; former v0.2 questions (RunService identity mapping, langgraph-server packaging friction) dissolved when the dual-implementation serving plan was dropped for a single owned FastAPI service.
