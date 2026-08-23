@@ -32,3 +32,7 @@ bypass-selection = true
 [tool.pytest.ini_options]
 addopts = "-m 'not live'"
 asyncio_mode = "auto"
+pythonpath = ["packages/ngen-weave-core"]
+markers = [
+    "live: touches real provider SDK internals; excluded by default, run with -m live",
+]
