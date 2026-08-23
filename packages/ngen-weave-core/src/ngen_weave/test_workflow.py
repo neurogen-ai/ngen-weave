@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from typing import Literal
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ngen_weave.errors import ConfigError
 from ngen_weave.provenance import join_path
@@ -415,23 +416,407 @@ def test_leaf_without_concrete_run_fails():
             output_type = Out
 
 
-def test_nondeterministic_build_fails():
-    counter = {"n": 0}
-    a = make_worker("DetA")
-    b = make_worker("DetB")
+# --- build() static lint ----------------------------------------------------
 
-    with pytest.raises(ConfigError, match="nondeterministic"):
+
+def test_os_environ_read_in_build_fails():
+    a = make_worker("EnvChild")
+
+    with pytest.raises(ConfigError, match="os.environ"):
 
         class Bad(Workflow):
             input_type = In
             output_type = Out
 
             def build(self, g):
-                counter["n"] += 1
-                chosen = a if counter["n"] % 2 else b
+                tier = os.environ.get("NGW_TIER", "fast")
+                chosen = a if tier == "fast" else a
                 g.add_node(chosen)
                 g.add_edge(START, chosen)
                 g.add_edge(chosen, END)
+
+
+def test_clock_read_in_build_fails():
+    import time
+
+    a = make_worker("ClockChild")
+
+    with pytest.raises(ConfigError, match="time"):
+
+        class Bad(Workflow):
+            input_type = In
+            output_type = Out
+
+            def build(self, g):
+                if time.time() > 0:
+                    g.add_node(a)
+                g.add_edge(START, a)
+                g.add_edge(a, END)
+
+
+_MODULE_STATE: dict = {}
+
+
+def test_module_global_mutation_in_build_fails():
+    a = make_worker("MutChild")
+
+    with pytest.raises(ConfigError, match="global state"):
+
+        class Bad(Workflow):
+            input_type = In
+            output_type = Out
+
+            def build(self, g):
+                _MODULE_STATE["n"] = 1
+                g.add_node(a)
+                g.add_edge(START, a)
+                g.add_edge(a, END)
+
+
+def test_self_mutation_in_build_fails():
+    a = make_worker("SelfMutChild")
+
+    with pytest.raises(ConfigError, match="stateless"):
+
+        class Bad(Workflow):
+            input_type = In
+            output_type = Out
+
+            def build(self, g):
+                self.calls = getattr(self, "calls", 0) + 1  # type: ignore[attr-defined]
+                g.add_node(a)
+                g.add_edge(START, a)
+                g.add_edge(a, END)
+
+
+def test_set_iteration_in_build_fails():
+    a = make_worker("SetA")
+    b = make_worker("SetB")
+
+    with pytest.raises(ConfigError, match="set"):
+
+        class Bad(Workflow):
+            input_type = In
+            output_type = Out
+
+            def build(self, g):
+                for node in {a, b}:
+                    g.add_node(node)
+                    g.add_edge(START, node)
+                    g.add_edge(node, END)
+
+
+def test_local_mutation_and_list_iteration_pass():
+    a = make_worker("LocalOk")
+
+    class Fine(Workflow):
+        input_type = In
+        output_type = Out
+
+        def build(self, g):
+            order = [a]
+            seen = {}
+            for node in order:
+                seen[workflow_class_path(node)] = True
+                g.add_node(node)
+            g.add_edge(START, a)
+            g.add_edge(a, END)
+
+    validate_structure(Fine)
+
+
+# --- fan-in surface (rule 3b) -----------------------------------------------
+
+
+class DraftOut(BaseModel):
+    draft: str
+
+
+class CritiqueOut(BaseModel):
+    critique: str
+
+
+class MergeInput(BaseModel):
+    draft: DraftOut
+    critique: CritiqueOut
+
+
+def _fanin_composite(synth_input: type[BaseModel], wire, *, defer: bool = False) -> type:
+    """Composite: entry worker feeds two branches; `wire` finishes the graph.
+
+    With defer=True the class is created without import-time validation; the
+    test then calls validate_structure explicitly inside its raises block.
+    """
+    entry = make_worker("FanEntry", input_type=In, output_type=DraftOut)
+    left = make_worker(
+        "FanLeft", prompt="critique {draft}", input_type=DraftOut, output_type=CritiqueOut
+    )
+    right = make_worker(
+        "FanRight", prompt="revise {draft}", input_type=DraftOut, output_type=DraftOut
+    )
+    synth = make_worker("Synth", prompt="merge", input_type=synth_input)
+
+    class Composite(Workflow):
+        input_type = In
+        output_type = Out
+        _defer_validation = defer
+
+        def build(self, g):
+            for n in (entry, left, right, synth):
+                g.add_node(n)
+            g.add_edge(START, entry)
+            g.add_edge(entry, left)
+            g.add_edge(entry, right)
+            wire(g, left, right, synth)
+            g.add_edge(synth, END)
+
+    return Composite
+
+
+def test_named_slot_fan_in_passes():
+    Composite = _fanin_composite(
+        MergeInput,
+        lambda g, left, right, synth: (
+            g.add_edge(right, synth, into="draft"),
+            g.add_edge(left, synth, into="critique"),
+        ),
+    )
+    validate_structure(Composite)
+
+
+def test_duplicate_slot_fails():
+    Composite = _fanin_composite(
+        MergeInput,
+        lambda g, left, right, synth: (
+            g.add_edge(right, synth, into="draft"),
+            g.add_edge(left, synth, into="draft"),
+        ),
+        defer=True,
+    )
+    with pytest.raises(ConfigError, match="twice"):
+        validate_structure(Composite)
+
+
+def test_uncovered_required_field_fails():
+    class PartialMerge(BaseModel):
+        draft: DraftOut
+        critique: CritiqueOut
+        extra: str
+
+    Composite = _fanin_composite(
+        PartialMerge,
+        lambda g, left, right, synth: (
+            g.add_edge(right, synth, into="draft"),
+            g.add_edge(left, synth, into="critique"),
+        ),
+        defer=True,
+    )
+    with pytest.raises(ConfigError, match="uncovered.*extra"):
+        validate_structure(Composite)
+
+
+def test_slot_source_type_mismatch_fails():
+    class WrongMerge(BaseModel):
+        draft: CritiqueOut  # right branch produces DraftOut, not CritiqueOut
+        critique: CritiqueOut
+
+    Composite = _fanin_composite(
+        WrongMerge,
+        lambda g, left, right, synth: (
+            g.add_edge(right, synth, into="draft"),
+            g.add_edge(left, synth, into="critique"),
+        ),
+        defer=True,
+    )
+    with pytest.raises(ConfigError, match="does not fit"):
+        validate_structure(Composite)
+
+
+def test_plain_edge_into_multi_parent_fails():
+    Composite = _fanin_composite(
+        MergeInput,
+        lambda g, left, right, synth: (
+            g.add_edge(right, synth),
+            g.add_edge(left, synth),
+        ),
+        defer=True,
+    )
+    with pytest.raises(ConfigError, match="exactly one list"):
+        validate_structure(Composite)
+
+
+def test_collected_fan_in_passes():
+    class ReduceInput(BaseModel):
+        reviews: list[Out] = Field(min_length=2, max_length=5)
+
+    entry = make_worker("CollEntry")
+    p1 = make_worker("CollP1")
+    p2 = make_worker("CollP2")
+    reducer = make_worker("CollReducer", prompt="reduce {reviews}", input_type=ReduceInput)
+
+    class Coll(Workflow):
+        input_type = In
+        output_type = Out
+
+        def build(self, g):
+            for n in (entry, p1, p2, reducer):
+                g.add_node(n)
+            g.add_edge(START, entry)
+            g.add_edge(entry, p1)
+            g.add_edge(entry, p2)
+            g.add_edge(p1, reducer)
+            g.add_edge(p2, reducer)
+            g.add_edge(reducer, END)
+
+    validate_structure(Coll)
+
+
+def test_arity_below_min_fails():
+    class TightMin(BaseModel):
+        reviews: list[Out] = Field(min_length=3)
+
+    entry = make_worker("ArEntry")
+    p1 = make_worker("ArP1")
+    p2 = make_worker("ArP2")
+    reducer = make_worker("ArReducer", prompt="reduce {reviews}", input_type=TightMin)
+
+    with pytest.raises(ConfigError, match="at least 3 parents"):
+
+        class Coll(Workflow):
+            input_type = In
+            output_type = Out
+
+            def build(self, g):
+                for n in (entry, p1, p2, reducer):
+                    g.add_node(n)
+                g.add_edge(START, entry)
+                g.add_edge(entry, p1)
+                g.add_edge(entry, p2)
+                g.add_edge(p1, reducer)
+                g.add_edge(p2, reducer)
+                g.add_edge(reducer, END)
+
+
+def test_arity_above_max_fails():
+    class TightMax(BaseModel):
+        reviews: list[Out] = Field(max_length=2)
+
+    entry = make_worker("MaxEntry")
+    ps = [make_worker(f"MaxP{i}") for i in range(3)]
+    reducer = make_worker("MaxReducer", prompt="reduce {reviews}", input_type=TightMax)
+
+    with pytest.raises(ConfigError, match="between 0 and 2 parents"):
+
+        class Coll(Workflow):
+            input_type = In
+            output_type = Out
+
+            def build(self, g):
+                for n in (entry, *ps, reducer):
+                    g.add_node(n)
+                g.add_edge(START, entry)
+                for p in ps:
+                    g.add_edge(entry, p)
+                    g.add_edge(p, reducer)
+                g.add_edge(reducer, END)
+
+
+def test_two_list_fields_fail_collected():
+    class TwoLists(BaseModel):
+        reviews: list[Out] = Field(default_factory=list)
+        extras: list[Out] = Field(default_factory=list)
+
+    entry = make_worker("TwoListEntry")
+    p1 = make_worker("TwoListP1")
+    reducer = make_worker("TwoListReducer", prompt="reduce {reviews}", input_type=TwoLists)
+
+    with pytest.raises(ConfigError, match="exactly one list"):
+
+        class Coll(Workflow):
+            input_type = In
+            output_type = Out
+
+            def build(self, g):
+                for n in (entry, p1, reducer):
+                    g.add_node(n)
+                g.add_edge(START, entry)
+                g.add_edge(entry, p1)
+                g.add_edge(entry, reducer)
+                g.add_edge(p1, reducer)
+                g.add_edge(reducer, END)
+
+
+def test_human_multi_parent_fails():
+    review_state = type(
+        "ReviewState",
+        (BaseModel,),
+        {
+            "__module__": __name__,
+            "__annotations__": {"verdict": Literal["approve", "reject"], "notes": str},
+        },
+    )
+    human = type(
+        "multi_human",
+        (Human,),
+        {
+            "__module__": __name__,
+            "__qualname__": "multi_human",
+            "input_type": In,
+            "output_type": Out,
+            "state_type": review_state,
+            "run": lambda self, input, ctx: Out(result="x"),
+        },
+    )
+    a = make_worker("HumanParentA")
+    b = make_worker("HumanParentB")
+
+    with pytest.raises(ConfigError, match="at most one parent"):
+
+        class Bad(Workflow):
+            input_type = In
+            output_type = Out
+
+            def build(self, g):
+                for n in (a, b, human):
+                    g.add_node(n)
+                g.add_edge(START, a)
+                g.add_edge(a, b)
+                g.add_edge(a, human)
+                g.add_edge(b, human)
+                g.add_edge(human, END)
+
+
+def test_into_on_single_parent_fails():
+    a = make_worker("SingleIntoSrc")
+    b = make_worker("SingleIntoDst")
+
+    with pytest.raises(ConfigError, match="single parent"):
+
+        class Bad(Workflow):
+            input_type = In
+            output_type = Out
+
+            def build(self, g):
+                g.add_node(a)
+                g.add_node(b)
+                g.add_edge(START, a)
+                g.add_edge(a, b, into="result")
+                g.add_edge(b, END)
+
+
+def test_start_edge_with_into_fails():
+    a = make_worker("StartIntoChild")
+
+    with pytest.raises(ConfigError, match="START edge cannot carry into"):
+
+        class Bad(Workflow):
+            input_type = In
+            output_type = Out
+
+            def build(self, g):
+                g.add_node(a)
+                g.add_edge(START, a, into="text")
+                g.add_edge(a, END)
 
 
 # --- model binding ----------------------------------------------------------
