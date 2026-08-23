@@ -373,9 +373,6 @@ def _check_topology(w: _Wiring, cls: type[Workflow]) -> None:
     for src, branches in w.conditional:
         successors.setdefault(src, set()).update(branches.values())
 
-    if any(into is not None and src == START for src, _dst, into in w.edges):
-        raise ConfigError(f"{path}: a START edge cannot carry into=; START carries no output")
-
     entry = entries[0]
     reached: set[str] = set()
     stack = [entry]
@@ -392,20 +389,19 @@ def _check_topology(w: _Wiring, cls: type[Workflow]) -> None:
     if not any(dst == END and src in reached for src, dst in all_edges):
         raise ConfigError(f"{path}: END is not reachable")
 
-    entry_child = w.nodes.get(entry)
-    if entry_child is not None and entry_child.input_type is not cls.input_type:
-        raise ConfigError(
-            f"{path}: entry child {entry} declares input_type "
-            f"{entry_child.input_type.__name__}, not the parent's {cls.input_type.__name__}"
-        )
+    # Rule 4, first hop: entry edges are checked inside _check_fanin, where
+    # START participates as a pseudo-source whose output_type is cls.input_type.
+    # Last hop: every terminal must emit a subtype of the composite output, so
+    # early-exit paths may narrow but never emit an unrelated model.
     terminals = [src for src, dst, _into in w.edges if dst == END]
     cond_to_end = [src for src, branches in w.conditional for t in branches.values() if t == END]
     for term in terminals + cond_to_end:
         child_cls = w.nodes.get(term)
-        if child_cls is not None and child_cls.output_type is not cls.output_type:
+        if child_cls is not None and not issubclass(child_cls.output_type, cls.output_type):
             raise ConfigError(
-                f"{path}: terminal child {term} declares output_type "
-                f"{child_cls.output_type.__name__}, not the parent's {cls.output_type.__name__}"
+                f"{path}: terminal child {term} emits "
+                f"{child_cls.output_type.__name__}, which is not a subtype of the "
+                f"composite output {cls.output_type.__name__}"
             )
 
     _check_fanin(w, cls, path)
@@ -414,17 +410,16 @@ def _check_topology(w: _Wiring, cls: type[Workflow]) -> None:
 def _incoming(w: _Wiring) -> tuple[dict[str, list[tuple[str, str | None]]], set[str]]:
     """Static parents per destination, plus conditional dispatch targets.
 
-    Only plain add_edge calls create static parents; START carries the run
-    input and is never a fan-in parent. Conditional branches dispatch to one
-    source per activation, so they never contribute a second simultaneous
-    input, but a target reached both statically and by dispatch has no
-    unambiguous assembly.
+    Plain add_edge calls create static parents; START joins its target as a
+    pseudo-source whose output_type is the composite's input_type (rule 4),
+    so entry edges reuse exactly the checks every other edge gets.
+    Conditional branches dispatch to one source per activation, so they never
+    contribute a second simultaneous input, but a target reached both
+    statically and by dispatch has no unambiguous assembly.
     """
     incoming: dict[str, list[tuple[str, str | None]]] = {}
     dispatched: set[str] = set()
     for src, dst, into in w.edges:
-        if src == START:
-            continue
         incoming.setdefault(dst, []).append((src, into))
     for _src, branches in w.conditional:
         for t in branches.values():
@@ -446,20 +441,92 @@ def _list_bounds(field_info: Any) -> tuple[int, int | None]:
     return min_length, max_length
 
 
+def _check_slot_fit(
+    w: _Wiring,
+    cls: type[Workflow],
+    path: str,
+    dst: str,
+    source: str,
+    field_name: str,
+) -> None:
+    """One into= edge: the slot must exist on dst's input and accept its source.
+
+    START counts as a pseudo-source whose output_type is the composite's
+    input_type (rule 4). Deep compatibility beyond a trivial subclass check
+    stays runtime port validation.
+    """
+    child_cls = w.nodes.get(dst)
+    if child_cls is None:
+        return
+    input_model = child_cls.input_type
+    fi = input_model.model_fields.get(field_name)
+    if fi is None:
+        raise ConfigError(
+            f"{path}: slot {field_name!r} on {dst} is not a field of "
+            f"{input_model.__name__}"
+        )
+    ann = fi.annotation
+    if not (isinstance(ann, type) and issubclass(ann, BaseModel)):
+        return
+    if source == START:
+        source_output, source_desc = cls.input_type, "the composite input"
+    else:
+        source_output, source_desc = w.nodes[source].output_type, f"{source}.output_type"
+    if not (isinstance(source_output, type) and issubclass(source_output, ann)):
+        raise ConfigError(
+            f"{path}: {source_desc} {source_output.__name__} does not fit slot "
+            f"{field_name!r} of type {ann.__name__} on {dst}"
+        )
+
+
 def _check_fanin(w: _Wiring, cls: type[Workflow], path: str) -> None:
-    """Rule 3b: every multi-parent target must fit exactly one declared form."""
+    """Rule 3b: every multi-parent target must fit exactly one declared form.
+
+    Rule 4 rides the same machinery: START joins as a pseudo-source whose
+    output_type is the composite's input_type, so entry edges (plain or into=)
+    are checked here like any other edge, and nothing about boundaries is a
+    second type-checking notion.
+    """
     incoming, dispatched = _incoming(w)
     for dst, parents in incoming.items():
-        if dst in dispatched:
+        if dst == END:
+            continue
+        # START delivers the run input rather than a state-keyed parent dump,
+        # so it never creates assembly ambiguity with dispatch and never
+        # counts toward parent counts; rule 4 still type-checks its edge.
+        ordinary = [(s, f) for s, f in parents if s != START]
+        entry_slot = next((f for s, f in parents if s == START), None)
+        if ordinary and dst in dispatched:
             raise ConfigError(
                 f"{path}: {dst} receives both static and conditional edges; "
                 "input assembly cannot know how many parents fire"
             )
-        if dst == END:
-            continue
         slots = [(s, f) for s, f in parents if f is not None]
-        if len(parents) == 1:
+        if not ordinary:
+            # Entry-only target (rule 4): START acts as a pseudo-source whose
+            # output_type is the composite's input_type. Either the edge
+            # targets a slot that must exist and accept that input, or the
+            # child receives the whole validated composite input.
+            if entry_slot is not None:
+                _check_slot_fit(w, cls, path, dst, START, entry_slot)
+                continue
+            child_cls = w.nodes.get(dst)
+            if child_cls is not None and not issubclass(
+                cls.input_type, child_cls.input_type
+            ):
+                raise ConfigError(
+                    f"{path}: entry child {dst} declares input_type "
+                    f"{child_cls.input_type.__name__}, which does not accept "
+                    f"the composite input {cls.input_type.__name__}"
+                )
+            continue
+        if len(ordinary) == 1:
             if slots:
+                if slots[0][0] == START:
+                    raise ConfigError(
+                        f"{path}: {dst} pairs the START entry edge with into=; "
+                        "an entry slot cannot coexist with an ordinary parent"
+                    )
                 raise ConfigError(
                     f"{path}: {dst} has a single parent; into= is only legal on multi-parent fan-in"
                 )
@@ -467,7 +534,7 @@ def _check_fanin(w: _Wiring, cls: type[Workflow], path: str) -> None:
         child_cls = w.nodes.get(dst)
         if child_cls is not None and issubclass(child_cls, Human):
             raise ConfigError(
-                f"{path}: human node {dst} accepts at most one parent, found {len(parents)}"
+                f"{path}: human node {dst} accepts at most one parent, found {len(ordinary)}"
             )
         if slots and len(slots) != len(parents):
             raise ConfigError(
@@ -480,35 +547,13 @@ def _check_fanin(w: _Wiring, cls: type[Workflow], path: str) -> None:
         if slots:
             seen: dict[str, str] = {}
             for source, field_name in slots:
-                fi = input_model.model_fields.get(field_name)
-                if fi is None:
-                    raise ConfigError(
-                        f"{path}: slot {field_name!r} on {dst} is not a field of "
-                        f"{input_model.__name__}"
-                    )
                 if field_name in seen:
                     raise ConfigError(
                         f"{path}: slot {field_name!r} on {dst} targeted twice "
                         f"({seen[field_name]}, {source})"
                     )
                 seen[field_name] = source
-                ann = fi.annotation
-                source_cls = w.nodes.get(source)
-                # Deep type checks happen at runtime as ordinary port validation;
-                # exact-model agreement is checked here when trivially decidable.
-                if (
-                    isinstance(ann, type)
-                    and issubclass(ann, BaseModel)
-                    and source_cls is not None
-                    and not (
-                        isinstance(source_cls.output_type, type)
-                        and issubclass(source_cls.output_type, ann)
-                    )
-                ):
-                    raise ConfigError(
-                        f"{path}: {source}.output_type {source_cls.output_type.__name__} "
-                        f"does not fit slot {field_name!r} of type {ann.__name__} on {dst}"
-                    )
+                _check_slot_fit(w, cls, path, dst, source, field_name)
             uncovered = [
                 name
                 for name, fi in input_model.model_fields.items()
@@ -540,7 +585,7 @@ def _check_fanin(w: _Wiring, cls: type[Workflow], path: str) -> None:
                     "list[<pydantic model>]"
                 )
             low, high = _list_bounds(fi)
-            count = len(parents)
+            count = len(ordinary)
             bound = f"between {low} and {high}" if high is not None else f"at least {low}"
             if count < low or (high is not None and count > high):
                 raise ConfigError(

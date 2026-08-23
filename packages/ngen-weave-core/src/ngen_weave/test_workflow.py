@@ -389,6 +389,63 @@ def test_boundary_mismatch_entry_child_fails():
                 g.add_edge(entry, END)
 
 
+def test_entry_child_accepting_supertype_input_passes():
+    class GenIn(BaseModel):
+        text: str
+
+    gen = make_worker("SupertypeEntry", input_type=GenIn)
+
+    class SpecificIn(GenIn):
+        count: int = 0
+
+    class Wf(Workflow):
+        input_type = SpecificIn
+        output_type = Out
+
+        def build(self, g):
+            g.add_node(gen)
+            g.add_edge(START, gen)
+            g.add_edge(gen, END)
+
+    validate_structure(Wf)
+
+
+def test_terminal_emitting_subtype_passes():
+    class SubOut(Out):
+        extra: str = "e"
+
+    early = make_worker("SubtypeTerminal", output_type=SubOut)
+
+    class Wf(Workflow):
+        input_type = In
+        output_type = Out
+
+        def build(self, g):
+            g.add_node(early)
+            g.add_edge(START, early)
+            g.add_edge(early, END)
+
+    validate_structure(Wf)
+
+
+def test_terminal_emitting_unrelated_model_fails():
+    class Unrelated(BaseModel):
+        x: int = 0
+
+    bad = make_worker("UnrelatedTerminal", output_type=Unrelated)
+
+    with pytest.raises(ConfigError, match="not a subtype"):
+
+        class Bad(Workflow):
+            input_type = In
+            output_type = Out
+
+            def build(self, g):
+                g.add_node(bad)
+                g.add_edge(START, bad)
+                g.add_edge(bad, END)
+
+
 def test_composite_overriding_run_fails():
     a = make_worker("CompChild")
 
@@ -804,19 +861,64 @@ def test_into_on_single_parent_fails():
                 g.add_edge(b, END)
 
 
-def test_start_edge_with_into_fails():
-    a = make_worker("StartIntoChild")
+def test_entry_into_slot_passes():
+    class Slotted(BaseModel):
+        text: In
 
-    with pytest.raises(ConfigError, match="START edge cannot carry into"):
+    entry = make_worker("SlottedEntry", prompt="go", input_type=Slotted)
+
+    class Wf(Workflow):
+        input_type = In
+        output_type = Out
+
+        def build(self, g):
+            g.add_node(entry)
+            g.add_edge(START, entry, into="text")
+            g.add_edge(entry, END)
+
+    validate_structure(Wf)
+
+
+def test_entry_slot_unknown_field_fails():
+    entry = make_worker("UnknownSlotEntry")
+
+    with pytest.raises(ConfigError, match="is not a field"):
 
         class Bad(Workflow):
             input_type = In
             output_type = Out
+            _defer_validation = True
 
             def build(self, g):
-                g.add_node(a)
-                g.add_edge(START, a, into="text")
-                g.add_edge(a, END)
+                g.add_node(entry)
+                g.add_edge(START, entry, into="nope")
+                g.add_edge(entry, END)
+
+        validate_structure(Bad)
+
+
+def test_entry_slot_type_mismatch_fails():
+    class Other(BaseModel):
+        zzz: int
+
+    class Slotted(BaseModel):
+        text: Other  # the composite input In does not fit Other
+
+    entry = make_worker("MismatchSlotEntry", prompt="go", input_type=Slotted)
+
+    with pytest.raises(ConfigError, match="does not fit"):
+
+        class Bad(Workflow):
+            input_type = In
+            output_type = Out
+            _defer_validation = True
+
+            def build(self, g):
+                g.add_node(entry)
+                g.add_edge(START, entry, into="text")
+                g.add_edge(entry, END)
+
+        validate_structure(Bad)
 
 
 # --- model binding ----------------------------------------------------------
