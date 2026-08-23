@@ -12,13 +12,13 @@ Files touched:
 - `packages/ngen-weave-core/src/ngen_weave/dispatch.py` (**new**, v1.1): dispatch backend protocol and local backend
 - `packages/ngen-weave-server/src/ngen_weave_server/`: compile route, dispatch wiring, hook route, workspace/review-session routes
 - `packages/ngen-weave-core/src/ngen_weave/workspaces.py` (**new**, v1.2), `review_sessions.py` (**new**, v1.2)
-- `packages/ngen-weave-core/alembic/versions/0003_workspaces.py`, `0004_ticket_queues.py` (**new**)
+- `packages/ngen-weave-core/alembic/versions/0005_workspaces.py`, `0006_ticket_queues.py` (**new**)
 - `packages/ngen-weave-cli/src/ngen_weave_cli/`: `compile` command
 - `packs/ngen-weave-pack-coding/` (**new**, v1.3), `packs/ngen-weave-pack-research/` (**new**, v1.3)
 - `design/distribution.md`, `design/collab-editing.md` (**new**)
 - `../ngen-weave-web/`: Argo export view, workspace switcher, live review sessions, collaborative editor client
 
-Depends on: `releases/post-1.0.md` (requirements, wins on nothing because `product/PRD.md` wins overall), `product/PRD.md` (decision log, especially the LangGraph-wrapped-not-exported and Argo-compiles-from-serialized-definitions decisions), `releases/v1.0.md` explicit-outs, and module shapes fixed by `implementation/v0.4.md` (data-only storage format), `implementation/v0.5.md` Steps 2–4 (plugin loading, `NODE_KINDS`, service resolution), `implementation/v0.6.md` Steps 1–11 (tables, async stores, auth matrix, collaboration slice), `implementation/v1.0.md` Step 1 (versioned routing, contract doc).
+Depends on: `releases/post-1.0.md` (requirements, wins on nothing because `product/PRD.md` wins overall), `product/PRD.md` (decision log, especially the LangGraph-wrapped-not-exported and Argo-compiles-from-serialized-definitions decisions), `releases/v1.0.md` explicit-outs, and module shapes fixed by `implementation/v0.4.md` (data-only storage format), `implementation/v0.5.md` Steps 2–4 (plugin loading, `NODE_KINDS`, service resolution), `implementation/v0.6.md` Steps 1–5 (tables, async stores), `implementation/v0.8.md` (auth matrix, collaboration slice, importer), `implementation/v1.0.md` Step 1 (versioned routing, contract doc).
 
 Conventions inherited unchanged: Python ≥3.12, uv workspace, pytest with fakes instead of network except `live`-marked tests, ruff, conventional commits, one commit per step, full non-live suite green before committing, web repo pnpm/Vitest/Playwright.
 
@@ -82,7 +82,7 @@ From `releases/post-1.0.md`, verbatim in intent:
 | CLI compile | `packages/ngen-weave-cli/tests/test_compile_cmd.py` |
 | compile API route | `packages/ngen-weave-server/src/ngen_weave_server/test_compile_api.py` |
 | workspaces, migration 0003 | `src/ngen_weave/test_workspaces.py`, `db/test_migrations.py` (extended) |
-| ticket queues, migration 0004 | `src/ngen_weave/tickets.py` tests (extended) |
+| ticket queues, migration 0006 | `src/ngen_weave/tickets.py` tests (extended) |
 | review sessions | `src/ngen_weave/test_review_sessions.py`, server `test_review_sessions_api.py` |
 | collab editing sync | web Vitest + server `test_collab_relay.py`; Playwright two-context spec |
 | notification group routing | `src/ngen_weave/test_notify_groups.py` |
@@ -321,7 +321,7 @@ Commits: `test(e2e): v1.1 success criteria`, `docs: distribution guide`, `chore:
 
 ### Step 7: v1.2 groundwork: workspaces
 
-`packages/ngen-weave-core/src/ngen_weave/workspaces.py` (**new**), `alembic/versions/0003_workspaces.py` (**new**), server workspace routes, `ProjectScope` widened, web workspace switcher.
+`packages/ngen-weave-core/src/ngen_weave/workspaces.py` (**new**), `alembic/versions/0005_workspaces.py` (**new**), server workspace routes, `ProjectScope` widened, web workspace switcher.
 
 Migration `0003`:
 
@@ -346,7 +346,7 @@ Server routes on the existing versioned mount: `POST/GET /api/v1/workspaces`, `P
 
 Web: workspace switcher beside the project switcher; switcher selection threads into the existing client base-path handling (query param, no route rewrite).
 
-Out of scope: nested workspaces/organizations, per-workspace budgets, invitations by email, SSO grouping, migrating the v0.6 one-role-per-user row model (that table stays as-is; workspace membership is additive).
+Out of scope: nested workspaces/organizations, per-workspace budgets, invitations by email, SSO grouping, migrating the v0.8 one-role-per-user row model (that table stays as-is; workspace membership is additive).
 
 Absorbs: organization-level grouping later extends `WorkspaceScope` with a parent field; role-matrix changes stay confined to `auth.py`/`workspaces.py` resolvers.
 
@@ -358,9 +358,9 @@ Commits: `feat(db): workspaces migration 0003`, `feat(core): workspace scopes an
 
 ### Step 8: Ticket queues
 
-`packages/ngen_weave/tickets.py` (extended), `alembic/versions/0004_ticket_queues.py` (**new**), server queue routes, web queue view.
+`packages/ngen_weave/tickets.py` (extended), `alembic/versions/0006_ticket_queues.py` (**new**), server queue routes, web queue view.
 
-Migration `0004`: `tickets` gains columns `assignee` str null, `queue` str null (defaults derived below), `picked_up_at` timestamptz null. Existing rows migrate with nulls; no backfill script needed since v0.5 tickets were run-local lists.
+Migration `0006`: `tickets` gains columns `assignee` str null, `queue` str null (defaults derived below), `picked_up_at` timestamptz null. Existing rows migrate with nulls; no backfill script needed since tickets were run-local lists before v0.8's table.
 
 Semantics, decided here:
 
@@ -369,7 +369,7 @@ Semantics, decided here:
 - Queues: `GET /api/v1/queues?role=reviewer&workspace=W` returns open tickets across the workspace's projects grouped by queue, ordered by age; a member sees only queues their role can act on. Pickup: `POST .../tickets/{id}/pickup` sets `picked_up_at` and assignee atomically (DB unique guard: pickup fails with 409 if already picked up and not completed).
 - Closing flow unchanged from v0.5; closure clears assignee state.
 
-Store: `TicketStore` methods extended (`assign`, `pickup`, `list_open(queue_filter)`) on both backends per the async protocols from v0.6 Step 2.
+Store: `TicketStore` methods extended (`assign`, `pickup`, `list_open(queue_filter)`) on both backends per the async protocols from v0.8 Step 5.
 
 Web: "My queue" page listing assigned and claimable tickets, linking into run detail; component tests for the 409 pickup case.
 
@@ -379,7 +379,7 @@ Absorbs: new queue dimensions (per-team, priority) land as filter fields on `lis
 
 Verify: `uv run pytest src/ngen_weave/tickets.py src/ngen_weave/db/test_migrations.py` plus server queue-route tests; two-client 409 covered in `test_queues_api.py`.
 
-Commits: `feat(db): ticket queue columns migration 0004`, `feat(core): queue assignment and pickup`, `feat(server): queue routes`, `feat(web): my-queue view`
+Commits: `feat(db): ticket queue columns migration 0006`, `feat(core): queue assignment and pickup`, `feat(server): queue routes`, `feat(web): my-queue view`
 
 ---
 
@@ -591,7 +591,7 @@ Commits: `chore: v1.3 changelog and version bumps`, `docs: nav and index updates
 
 1. **Serialized definition metadata** (v0.4 format): gains optional per-node `retry: int` and `priority: int | null` (Step 4). Additive under the coverage-not-breaking rule; older definitions stay valid.
 2. **Runner leaf invocation** (v0.1, async since v0.6 Step 2): the single inline leaf-execution call site becomes `await backend.dispatch(activation)` (Step 4); local backend reproduces today's behavior exactly.
-3. **`tickets` table** (v0.6 Step 1): gains `assignee`, `queue`, `picked_up_at` in migration 0004 (Step 8); existing columns untouched.
+3. **`tickets` table** (v0.8 Step 5, migration `0003_tickets`): gains `assignee`, `queue`, `picked_up_at` in migration 0006 (Step 8); existing columns untouched.
 4. **`projects` table** (v1.0): gains nullable `workspace` FK in migration 0003 (Step 7).
 5. **Plugin surface** (v0.5 Steps 2–4): if the conformance harness (Step 14) finds router-mounting or renderer-registration gaps, fixes land as `fix(core)` commits in Step 14 and are recorded here; no speculative widening before evidence.
 6. **Entry-point groups** (v0.5 pattern): two new groups, `ngen-weave.compile-targets` and `ngen-weave.dispatch-backends`, loaded by the same machinery (Steps 2, 4).

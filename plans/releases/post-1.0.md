@@ -17,7 +17,7 @@ Temporal stays a documented alternative backend, not built.
 
 ## v1.2: collaboration
 
-Full team features on top of v0.6 auth/roles and the v0.5 slice: shared workspaces across projects, ticket workflows with role-based assignment queues, collaborative review sessions (multiple humans in one review artifact concurrently), notification routing per team. Simultaneous editing of documents remains adapter territory (external editors like Google Docs stay linked, not stored); simultaneous *workflow* editing in ngen-weave-web is the new ground here and will need an operational transform or CRDT decision made with evidence at design time.
+Full team features on top of v0.8 auth/roles: shared workspaces across projects, ticket workflows with role-based assignment queues, collaborative review sessions (multiple humans in one review artifact concurrently), notification routing per team. Simultaneous editing of documents remains adapter territory (external editors like Google Docs stay linked, not stored); simultaneous *workflow* editing in ngen-weave-web is the new ground here and will need an operational transform or CRDT decision made with evidence at design time.
 
 ## v1.3+: vertical packs
 
