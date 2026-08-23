@@ -14,7 +14,6 @@ Classes:
     Worker: Leaf node that renders a prompt and calls the model.
     Control: Leaf node producing a boolean verdict for routing.
     Human: Leaf node pausing the run for human review.
-    AgentNode: Declared seam for agent execution, mocked in v0.1.
     GraphBuilder: Protocol build() receives for wiring nodes and edges.
 
 Functions:
@@ -160,13 +159,6 @@ class Human(Workflow):
 
     state_type: ClassVar[type[BaseModel]]
     verdict_field: ClassVar[str] = "verdict"
-
-    def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
-        raise NotImplementedError
-
-
-class AgentNode(Workflow):
-    """Declared seam for agent execution; v0.1 runs only a mocked executor."""
 
     def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
         raise NotImplementedError
