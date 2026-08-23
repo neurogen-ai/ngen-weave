@@ -13,6 +13,6 @@ Rule: a design doc exists to record decisions with their reasons, not to spec ev
 
 | question | blocks | notes |
 |---|---|---|
-| RunService ↔ langgraph-server identity mapping | v0.2 | how ngen-weave run-ids map to LangGraph threads/runs; needed for resume semantics |
-| langgraph-server packaging friction evidence | v0.2 | record what feeding ngen-weave's registry/config into its deployment model actually costs |
-| Push vs polling for run screens | v0.4 | decide on evidence once run management UI exists |
+| Push vs polling for run screens | v0.4 | decide on evidence once run management UI exists (v0.4 plan reserves this as an amendment decision) |
+
+Settled in implementation planning and recorded there: RunService ↔ langgraph-server identity mapping and langgraph-server packaging friction evidence (`implementation/v0.2.md` Steps 2 and 5).
