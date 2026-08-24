@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
     "langgraph>=0.2",
+    "langgraph-checkpoint-sqlite>=2",
     "litellm>=1.40",
     "pydantic>=2.7",
     "pyyaml>=6.0.3",
