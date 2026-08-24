@@ -155,10 +155,18 @@ class Human(Workflow):
         state_type: Internal pydantic model between input and output; its leaf
             primitives become the artifact's editable slots.
         verdict_field: Name of the enum/literal state field routing out of this node.
+        prefill: Maps response slots to dotted paths into the edge input; fills
+            the artifact, never completes it.
     """
 
     state_type: ClassVar[type[BaseModel]]
     verdict_field: ClassVar[str] = "verdict"
+    prefill: ClassVar[Mapping[str, str]] = {}
+
+    def transform(self, context: BaseModel, state: BaseModel) -> BaseModel:
+        """Programmatic (context, state) -> output transformation; when not
+        overridden the validated state passes through as the node's output."""
+        raise NotImplementedError
 
     def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
         raise NotImplementedError
@@ -340,6 +348,28 @@ def _check_declarations(cls: type[Workflow]) -> None:
             raise ConfigError(
                 f"{path}: verdict field {verdict!r} must be on state_type, enum- or literal-typed"
             )
+        for name, fi in state_type.model_fields.items():
+            if isinstance(fi.annotation, type) and issubclass(fi.annotation, BaseModel):
+                raise ConfigError(
+                    f"{path}: state_type field {name!r} is a nested model; "
+                    "review artifacts cover flat models only"
+                )
+        for slot, slot_path in getattr(cls, "prefill", {}).items():
+            if slot not in state_type.model_fields:
+                raise ConfigError(f"{path}: prefill targets unknown state field {slot!r}")
+            target: Any = cls.input_type
+            for segment in slot_path.split("."):
+                if not (isinstance(target, type) and issubclass(target, BaseModel)):
+                    raise ConfigError(
+                        f"{path}: prefill path {slot_path!r} traverses below a primitive"
+                    )
+                fi2 = target.model_fields.get(segment)
+                if fi2 is None:
+                    raise ConfigError(
+                        f"{path}: prefill path {slot_path!r} names no field {segment!r} "
+                        f"of {cls.input_type.__name__}"
+                    )
+                target = fi2.annotation
 
     prompt = getattr(cls, "prompt", None)
     if isinstance(prompt, str):

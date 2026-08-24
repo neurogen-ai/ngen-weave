@@ -249,6 +249,67 @@ def test_human_verdict_field_wrong_type_fails():
             state_type = Plain
 
 
+def test_prefill_unknown_state_field_fails():
+    class S(BaseModel):
+        verdict: Literal["approve", "reject"]
+
+    with pytest.raises(ConfigError, match="unknown state field"):
+
+        class Bad(Human):
+            input_type = In
+            output_type = Out
+            state_type = S
+            prefill = {"nope": "x"}
+
+
+def test_prefill_unknown_context_path_fails():
+    class S(BaseModel):
+        verdict: Literal["approve", "reject"]
+        note: str = ""
+
+    with pytest.raises(ConfigError, match="prefill path"):
+
+        class Bad(Human):
+            input_type = In
+            output_type = Out
+            state_type = S
+            prefill = {"note": "nowhere.to.be"}
+
+
+def test_prefill_dotted_context_path_passes():
+    class Nested(BaseModel):
+        leaf: str
+
+    class Source(BaseModel):
+        nested: Nested
+
+    class S(BaseModel):
+        verdict: Literal["approve", "reject"]
+        note: str = ""
+
+    class Ok(Human):
+        input_type = Source
+        output_type = Out
+        state_type = S
+        prefill = {"note": "nested.leaf"}
+
+
+def test_nested_state_type_field_fails_at_import():
+    class Inner(BaseModel):
+        x: int
+
+    class Nested(BaseModel):
+        verdict: Literal["approve", "reject"]
+        inner: Inner
+
+    with pytest.raises(ConfigError, match="nested model"):
+
+        class Bad(Human):
+            input_type = In
+            output_type = Out
+            state_type = Nested
+
+
 def test_artifact_name_not_on_output_type_fails():
     base = make_worker("ArtifactBase")
 
