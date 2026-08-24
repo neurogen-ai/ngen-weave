@@ -110,3 +110,51 @@ innermost enclosing composite beats the provider's default variant (read off
 the provider's `default_variant` attribute when present, else `"default"`).
 The chosen variant lands in every `model_call` provenance payload, so resumed
 runs and supervision see which variant actually ran.
+
+## Nesting and cost attribution
+
+Composite children compile eagerly at parent compile time. `compile` carries
+an `outer_scopes` chain (innermost first), which does two jobs: model
+bindings keyed on ancestors above the compiled class still govern its leaves,
+and the full class-path chain becomes the base every inner activation path is
+prefixed with, so node paths accumulate one segment per level
+(`Root.Inner.Leaf`). A cycle guard rejects composite wiring that loops back
+into its own subtree at compile time.
+
+At runtime a composite child activates like any leaf from its parent's
+perspective: assemble input per the declared fan-in form, validate against
+the child's `input_type`, invoke the child's compiled graph under a nested
+checkpoint namespace (`attempt-N:<node_path>`), validate the child's terminal
+dump against the child's `output_type`, then write `{path: dump}` into parent
+state exactly as a leaf would. Nothing above the composite knows it has
+children.
+
+Usage flows through state, not config. Every node returns its usage tuples
+under an accumulated channel (`__ngen_usage__`, reduced with `operator.add`);
+a composite reads its subtree total from the child's final state and folds it
+into its own metadata. Each completed scope therefore emits one
+`node_activation` record whose `metadata` covers the whole subtree:
+
+- leaves report their own activation (attempts included),
+- composites report once, summing all descendants,
+- the root reports from `_drive` after successful completion, since the root
+  workflow is not a node in its own graph.
+
+Per-level cost attribution falls out of this without level-specific code:
+inner totals are subsets of outer totals by construction.
+
+Composites sit outside the retry loop. Leaves inside already apply the retry
+policy; re-driving a whole subtree after its budget was exhausted would
+multiply cost without changing the outcome, so an escaping `InfraError`
+propagates to the top-level catch untouched.
+
+## Attempts, resume, and why namespaces exist
+
+LangGraph does not reschedule a node that raised: the failed superstep
+completes, no triggers remain, and replaying the same checkpoint namespace
+ends immediately with nothing written. `_drive` therefore bumps
+`RunFile.attempts` on every drive and runs under namespace `attempt-N`
+(nested activations under `attempt-N:<node_path>`). Until interrupts arrive
+(Step 9), resuming a stopped run re-executes from the top, seeded with the
+run file's stored input; the record stream keeps every attempt's provenance,
+which is the honest history.
