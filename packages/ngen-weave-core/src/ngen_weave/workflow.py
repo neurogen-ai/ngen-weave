@@ -168,10 +168,11 @@ class GraphBuilder(Protocol):
 
 @dataclass(frozen=True)
 class _Op:
-    """One builder call noted during the dry run for static checks."""
+    """One builder call noted during the build for replay and static checks."""
 
     name: str
     args: tuple  # class paths / END literals / into fields only; routers excluded
+    router: Callable[[dict], str] | None = None  # conditional edges only
 
 
 _BUILDER_DOC = """
@@ -195,7 +196,7 @@ class _StateGraphAdapter:
     def __init__(
         self,
         node_runner: Callable[[Workflow], Callable] | None = None,
-        router_wrapper: Callable[[Callable, Mapping[str, str]], Callable] | None = None,
+        router_wrapper: Callable[[str, Callable, Mapping[str, str]], Callable] | None = None,
     ) -> None:
         from langgraph.graph import StateGraph
 
@@ -230,7 +231,7 @@ class _StateGraphAdapter:
     ) -> None:
         mapping = {label: _endpoint(t) for label, t in branches.items()}
         if self._router_wrapper is not None:
-            router = self._router_wrapper(router, mapping)
+            router = self._router_wrapper(workflow_class_path(src), router, mapping)
         try:
             self._g.add_conditional_edges(workflow_class_path(src), router, mapping)
         except Exception as exc:
@@ -238,7 +239,7 @@ class _StateGraphAdapter:
                 f"langgraph rejected conditional edges from {workflow_class_path(src)}: {exc}"
             ) from exc
         targets = tuple(sorted(mapping.items()))
-        self.ops.append(_Op("add_conditional", (workflow_class_path(src), targets)))
+        self.ops.append(_Op("add_conditional", (workflow_class_path(src), targets), router=router))
 
 
 # --- structural checks ------------------------------------------------------
