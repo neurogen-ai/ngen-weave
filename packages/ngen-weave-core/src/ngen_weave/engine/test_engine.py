@@ -12,12 +12,14 @@ import pytest
 from pydantic import BaseModel, Field
 from tests.fakes import FakeProvider
 
+import ngen_weave.engine.runner as ngen_runner
 from ngen_weave import registry
 from ngen_weave.engine import Engine
 from ngen_weave.engine.runner import _INPUT_KEY, _LAST_KEY  # noqa: F401
 from ngen_weave.engine.state import RUN_FILE_FORMAT, RunFile
 from ngen_weave.engine.store import RunStore
-from ngen_weave.errors import ConfigError
+from ngen_weave.errors import ConfigError, InfraError
+from ngen_weave.models.provider import Completion
 from ngen_weave.provenance import ProvenanceRecord
 from ngen_weave.registry import register
 from ngen_weave.workflow import END, START, Control, Worker, Workflow, workflow_class_path
@@ -457,3 +459,80 @@ async def test_resume_with_payload_before_human_support_raises(tmp_path):
     result = await engine.run(chain, Root(text="hi"))
     with pytest.raises(ConfigError, match="later step"):
         await engine.resume(result.run_id, payload={"verdict": "approve"})
+
+
+# --- retry policy ------------------------------------------------------------
+
+
+class FlakyProvider(FakeProvider):
+    """FakeProvider that raises InfraError for the first `fail_times` calls."""
+
+    def __init__(self, replies: list[str], fail_times: int) -> None:
+        super().__init__(replies)
+        self.fail_times = fail_times
+
+    async def complete(self, messages: list[dict], *, variant: str | None = None) -> Completion:
+        if len(self.calls) < self.fail_times:
+            self.calls.append((messages, variant))
+            raise InfraError("transport down")
+        return await super().complete(messages, variant=variant)
+
+
+async def test_infra_failure_retries_with_backoff_then_fails(tmp_path, monkeypatch):
+    delays: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(ngen_runner, "_sleep", fake_sleep)
+    w1 = make_worker("W1", Root, Piece)
+    chain = make_chain([w1], Root, Piece)
+    provider = FlakyProvider(['{"text":"never"}'], fail_times=99)
+    engine = Engine(
+        provider,
+        RunStore(tmp_path / "runs"),
+        checkpointer="memory",
+        max_retries=2,
+        retry_backoff_ms=5,
+    )
+
+    result = await engine.run(chain, Root(text="hi"))
+
+    assert result.status == "failed"
+    assert provider.calls.__len__() == 3  # initial attempt + two retries
+    assert delays == [0.005, 0.010]  # exponential from the base
+    rf = engine.store.load(result.run_id)
+    assert rf.error is not None and rf.error["type"] == "InfraError"
+    retries = [
+        r.payload["attempt"]
+        for r in rf.records
+        if r.kind == "node_activation" and r.payload.get("status") == "retry"
+    ]
+    assert retries == [1, 2]
+
+
+async def test_transient_infra_failure_recovers_within_budget(tmp_path, monkeypatch):
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(ngen_runner, "_sleep", fake_sleep)
+    w1 = make_worker("W1", Root, Final)
+    chain = make_chain([w1], Root, Final)
+    provider = FlakyProvider(['{"text":"recovered"}'], fail_times=1)
+    engine = Engine(
+        provider,
+        RunStore(tmp_path / "runs"),
+        checkpointer="memory",
+        max_retries=3,
+        retry_backoff_ms=1,
+    )
+
+    result = await engine.run(chain, Root(text="hi"))
+
+    assert result.status == "completed"
+    assert result.output == Final(text="recovered")
+    rf = engine.store.load(result.run_id)
+    retries = [
+        r for r in rf.records if r.kind == "node_activation" and r.payload.get("status") == "retry"
+    ]
+    assert len(retries) == 1
