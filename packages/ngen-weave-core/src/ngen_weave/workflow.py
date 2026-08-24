@@ -192,16 +192,25 @@ class _StateGraphAdapter:
     StateGraph, so structural errors come out of real compilation, and notes
     the wired edges for the static topology and fan-in checks."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        node_runner: Callable[[Workflow], Callable] | None = None,
+        router_wrapper: Callable[[Callable, Mapping[str, str]], Callable] | None = None,
+    ) -> None:
         from langgraph.graph import StateGraph
 
         self._g: StateGraph = StateGraph(dict)
         self.ops: list[_Op] = []
         self.node_classes: dict[str, type[Workflow]] = {}
+        # The engine supplies both hooks to bind real node functions and
+        # runtime-checked routers; validation builds keep the no-op defaults.
+        self._node_runner = node_runner
+        self._router_wrapper = router_wrapper
 
     def add_node(self, node: Workflow) -> None:
         path = workflow_class_path(node)
-        self._g.add_node(path, lambda state: {})
+        fn = self._node_runner(node) if self._node_runner is not None else (lambda state: {})
+        self._g.add_node(path, fn)
         self.ops.append(_Op("add_node", (path,)))
         self.node_classes[path] = node if isinstance(node, type) else type(node)
 
@@ -220,6 +229,8 @@ class _StateGraphAdapter:
         self, src: Workflow, router: Callable[[dict], str], branches: Mapping[str, Workflow | str]
     ) -> None:
         mapping = {label: _endpoint(t) for label, t in branches.items()}
+        if self._router_wrapper is not None:
+            router = self._router_wrapper(router, mapping)
         try:
             self._g.add_conditional_edges(workflow_class_path(src), router, mapping)
         except Exception as exc:
@@ -309,6 +320,15 @@ def _check_declarations(cls: type[Workflow]) -> None:
 
     if issubclass(cls, Worker) and getattr(cls, "prompt", None) is None:
         raise ConfigError(f"{path}: Worker requires a prompt template or prompt() override")
+
+    if (
+        issubclass(cls, Control)
+        and cls.decide is Control.decide
+        and getattr(cls, "prompt", None) is None
+    ):
+        raise ConfigError(
+            f"{path}: model-mode Control requires a prompt template or a decide() override"
+        )
 
     if issubclass(cls, Control):
         f = cls.output_type.model_fields.get("pass")
