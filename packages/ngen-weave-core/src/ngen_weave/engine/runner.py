@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
+from asyncio import sleep as _sleep  # engine-owned alias; tests patch this
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,7 +34,7 @@ from pydantic import BaseModel, ValidationError
 
 from ngen_weave.engine.state import RunResult, RunStatus
 from ngen_weave.engine.store import RunStore
-from ngen_weave.errors import ConfigError, DataError
+from ngen_weave.errors import ConfigError, DataError, InfraError
 from ngen_weave.models.provider import CompletionProvider
 from ngen_weave.provenance import (
     PROVENANCE_VERSION,
@@ -458,13 +459,23 @@ class Engine:
 
             ctx = RunContext(run_id=run_id, node_path=node_path, emit=emit, provider=self.provider)
             try:
-                output = await self._execute_leaf(cls, path, model, ctx, usage, cell)
+                attempt = 0
+                while True:
+                    attempt += 1
+                    try:
+                        output = await self._execute_leaf(cls, path, model, ctx, usage, cell)
+                        break
+                    except InfraError:
+                        if attempt > self.max_retries:
+                            raise
+                        emit("node_activation", {"status": "retry", "attempt": attempt})
+                        await _sleep(self.retry_backoff_ms * 2 ** (attempt - 1) / 1000)
             except DataError:
                 emit("node_activation", {"status": "invalid"})
                 raise
 
             metadata = RunMetadata(
-                iterations=1,
+                iterations=attempt,
                 tokens_in_context=sum(u[0] for u in usage),
                 tokens_total=sum(u[1] for u in usage),
                 cost_usd=sum(u[2] for u in usage),
