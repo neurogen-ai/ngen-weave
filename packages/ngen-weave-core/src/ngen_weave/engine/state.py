@@ -41,6 +41,7 @@ class RunFile:
     output: dict | None = None
     error: dict[str, str] | None = None  # {"type": str, "message": str}
     attempts: int = 0
+    submissions: dict[str, dict] = field(default_factory=dict)
     records: list[ProvenanceRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -54,6 +55,7 @@ class RunFile:
             "output": self.output,
             "error": self.error,
             "attempts": self.attempts,
+            "submissions": self.submissions,
             "records": [dataclasses.asdict(record) for record in self.records],
         }
 
@@ -69,6 +71,7 @@ class RunFile:
             output=data.get("output"),
             error=data.get("error"),
             attempts=data.get("attempts", 0),
+            submissions=data.get("submissions", {}),
             records=[ProvenanceRecord(**record) for record in data.get("records", ())],
         )
 

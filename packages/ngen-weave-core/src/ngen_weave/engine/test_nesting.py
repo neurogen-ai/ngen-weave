@@ -8,6 +8,7 @@ Variant bindings resolve through the full enclosing-scope chain.
 """
 
 from pathlib import Path  # noqa: F401  (tmp_path fixtures)
+from typing import Literal
 
 import pytest
 from pydantic import BaseModel, Field
@@ -20,7 +21,14 @@ from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import ConfigError, InfraError
 from ngen_weave.models.provider import Completion
 from ngen_weave.registry import register
-from ngen_weave.workflow import END, START, Worker, Workflow, workflow_class_path
+from ngen_weave.workflow import (
+    END,
+    START,
+    Human,
+    Worker,
+    Workflow,
+    workflow_class_path,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -289,3 +297,70 @@ async def test_crash_mid_run_resumes_from_fresh_engine(tmp_path, monkeypatch):
     assert any(r.node_path == root_path for r in ok_records)
     depth2 = f"{root_path}.{workflow_class_path(inner)}.{workflow_class_path(inner_w2)}"
     assert any(r.node_path == depth2 for r in ok_records)
+
+
+# --- depth-2 interrupt: success criterion 3's second half --------------------
+
+
+class Review(BaseModel):
+    verdict: Literal["approve", "reject"]
+    notes: str = ""
+
+
+def _make_review_inner():
+    h = type(
+        "InnerReview",
+        (Human,),
+        {"input_type": Piece, "output_type": Review, "state_type": Review},
+    )
+    register(h, "test")
+    fin = make_worker("InnerFinish", Review, Final, prompt="ok {verdict}")
+    rej = make_worker("InnerReject", Review, Final, prompt="no {verdict}")
+    hp = workflow_class_path(h)
+
+    def build(self, g):
+        g.add_node(h)
+        g.add_node(fin)
+        g.add_node(rej)
+        g.add_edge(fin, END)
+        g.add_edge(rej, END)
+        g.add_edge(START, h)
+        g.add_conditional_edges(
+            h, lambda s: s[hp]["verdict"], {"approve": fin, "reject": rej}
+        )
+
+    inner = type(
+        "ReviewInner",
+        (Workflow,),
+        {"input_type": Piece, "output_type": Final, "build": build},
+    )
+    register(inner, "test")
+    return inner, h, fin
+
+
+async def test_interrupt_at_depth_two_resumes(tmp_path):
+    inner, h, fin = _make_review_inner()
+    outer = make_chain("ReviewOuter", [inner], Piece, Final)
+    engine = make_engine(['{"text":"deep-done"}'], tmp_path)
+
+    waiting = await engine.run(outer, Piece(text="go"))
+
+    assert waiting.status == "waiting_human"
+    h_path = f"{workflow_class_path(outer)}.{workflow_class_path(inner)}.{workflow_class_path(h)}"
+    assert waiting.waiting["node_path"] == h_path
+
+    result = await engine.resume(waiting.run_id, payload={"verdict": "approve", "notes": ""})
+
+    assert result.status == "completed"
+    assert result.output == Final(text="deep-done")
+    rf = engine.store.load(waiting.run_id)
+    ok_paths = [
+        r.node_path
+        for r in rf.records
+        if r.kind == "node_activation" and r.payload.get("status") == "ok"
+    ]
+    # Per-scope metadata at every level: human node, inner composite, root.
+    for expected in (h_path, f"{workflow_class_path(outer)}.{workflow_class_path(inner)}"):
+        assert expected in ok_paths
+    writes = [r for r in rf.records if r.kind == "artifact_write"]
+    assert len(writes) == 1
