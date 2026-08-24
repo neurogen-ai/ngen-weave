@@ -82,3 +82,31 @@ class RunStore:
     def list(self) -> list[RunFile]:
         """Return every stored run file, ordered by run id."""
         return [self.load(p.stem) for p in sorted(self.runs_dir.glob("*.json"))]
+
+    # --- review artifacts -----------------------------------------------------
+
+    def save_review_artifact(self, run_id: str, node_name: str, yaml_text: str) -> Path:
+        """Write one review artifact under runs/<run-id>/artifacts/ and return
+        its path. Overwrites are idempotent replays of the same waiting node."""
+        directory = self.runs_dir / run_id / "artifacts"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{node_name}.yaml"
+        tmp = path.with_suffix(".yaml.tmp")
+        tmp.write_text(yaml_text)
+        os.replace(tmp, path)
+        return path
+
+    def read_review_artifact(self, path: Path) -> dict:
+        """Return a review artifact's parsed YAML mapping.
+
+        Raises:
+            ConfigError: The artifact file is missing or malformed.
+        """
+        import yaml
+
+        if not path.is_file():
+            raise ConfigError(f"review artifact missing: {path}")
+        data = yaml.safe_load(path.read_text())
+        if not isinstance(data, dict) or "response" not in data:
+            raise ConfigError(f"review artifact {path} lacks a response section")
+        return data
