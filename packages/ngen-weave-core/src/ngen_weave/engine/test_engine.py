@@ -190,7 +190,7 @@ async def test_linear_worker_chain_completes(tmp_path):
 
     rf = engine.store.load(result.run_id)
     kinds = [(r.kind, r.payload.get("status")) for r in rf.records]
-    assert kinds.count(("node_activation", "ok")) == 3
+    assert kinds.count(("node_activation", "ok")) == 4  # three nodes plus the root scope
     assert kinds.count(("model_call", None)) == 3
     assert rf.output == {"text": "three"}
     assert rf.error is None
