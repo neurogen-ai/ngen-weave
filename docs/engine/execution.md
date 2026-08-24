@@ -159,4 +159,64 @@ ends immediately with nothing written. `_drive` therefore bumps
 (nested activations under `attempt-N:<node_path>`). Until interrupts arrive
 (Step 9), resuming a stopped run re-executes from the top, seeded with the
 run file's stored input; the record stream keeps every attempt's provenance,
-which is the honest history.
+which is the honest history. Interrupt resumes are the exception: they reuse
+the interrupted namespace so the parked superstep can continue (next
+section).
+
+## Human interrupts and review artifacts
+
+A human leaf never executes author code. On first activation the engine
+generates the response slots from `state_type`'s leaf primitives, seeds them
+via the class's `prefill` map (dotted paths into the edge input's dump),
+writes the two-section YAML artifact, emits `node_activation` with status
+`waiting_human`, and calls LangGraph `interrupt()`. The artifact lands at
+`.ngen-weave/runs/<run-id>/artifacts/<node_path with dots as __>.yaml`; the
+full node path names the file because two humans can share a short class name
+and identity is the class path.
+
+The engine learns that a run parked from its own emitter: any
+`waiting_human` payload sets an in-memory flag `_drive` checks after the
+graph invocation returns. A parked run saves status `waiting_human` and no
+output; `RunResult.waiting` carries the node path and artifact path.
+
+Resuming validates before anything moves. `Engine.resume(run_id, payload)`
+takes the submitted response from `payload` (remote JSON form) or reads it
+from the artifact file when payload is None (local YAML form); both carry
+identical payloads. The response validates against the waiting node's
+`state_type`; a rejection raises DataError naming the missing fields and the
+run stays waiting. A valid submission records three things: an
+`artifact_write` provenance record with the SHA-256 of the canonical JSON
+response, the response itself under `RunFile.submissions[node_path]`, and
+then the graph continuation.
+
+Continuation mechanics: a fresh drive bumps attempts and opens a new
+checkpoint namespace, but an interrupt resume deliberately reuses the
+existing namespace (`attempt-N`) and invokes the graph with
+`Command(resume=response)`. Human nodes see the `resuming` config flag and
+skip artifact side effects on replay, since the framework re-runs the
+interrupted node task from its start and `interrupt()` then returns the
+submitted value.
+
+Nesting adds one hop. When the interrupted human sits inside a composite,
+the child graph's invocation ends with `__interrupt__` in its final state.
+The composite node then calls `interrupt(None)` itself, so every enclosing
+graph parks with a real registered interrupt. The submitted response does
+not travel through those framework interrupts; it rides in config as
+`ngen_resume_value`, and each enclosing composite forwards it down as
+`Command(resume=...)` on replay until it reaches the human. This keeps one
+source of truth for the payload while letting the framework manage pause and
+replay mechanics at each level.
+
+One checkpointer per graph level. Sharing a single memory checkpointer across
+parent and child graphs makes interrupt resume silently become a no-op: the
+root invocation returns stale state without re-running anything (verified by
+probe). Every compiled graph therefore owns a dedicated saver; SQLite mode
+is file-backed, so per-level instances persist through separate connections
+naturally.
+
+Output shaping: by default the validated state passes through as the human
+node's output. A subclass overriding `transform(context, state)` replaces
+that, and the result validates against `output_type` like any leaf output.
+Routing out of the human happens through ordinary conditional edges declared
+in `build()`; routers read the verdict field of the submitted state exactly
+like control routers read `pass`.
