@@ -96,12 +96,14 @@ record, which is quadratic in run length but correct at CLI scale; the SQLite
 swap at v0.2 replaces the backing behind this same class.
 
 Checkpoints thread through LangGraph (`AsyncSqliteSaver` by default, a shared
-`MemorySaver` for tests) under `thread_id = run_id`. `resume` on a completed
-run returns the stored output without touching checkpoints; on an interrupted
-run it replays from the checkpoint. Cross-process resume of a crashed run
-needs the original model bindings, which the run file does not carry; within
-one process the compile cache provides them, and Step 9's human flow is the
-first caller that relies on this path.
+`MemorySaver` for tests) under `thread_id = run_id`, namespaced per drive
+attempt (see below). `resume` on a completed run returns the stored output
+without touching checkpoints; on a stopped run it re-executes from the top
+under a fresh namespace, seeded with the run file's stored input. Until Step
+9 adds interrupts there is no mid-graph continuation to replay. Cross-process
+resume of a crashed run needs the original model bindings, which the run file
+does not carry; within one process the compile cache provides them, and Step
+9's human flow is the first caller that relies on this path.
 
 ## Model variant resolution
 
