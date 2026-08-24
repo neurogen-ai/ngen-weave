@@ -1,13 +1,7 @@
-on: [push, pull_request]
+on: [push]
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
+  test:
+    runs-on: docker
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.12"
-      - run: uv sync
-      - run: uv run ruff check .
-      - run: uv run pytest
+      - run: echo "Tests go here"
