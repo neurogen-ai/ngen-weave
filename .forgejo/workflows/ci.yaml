@@ -30,7 +30,7 @@ jobs:
 
       - name: Test (pytest)
         if: always()
-        run: uv run pytest --junitxml=test-report.xml --html=report.html --self-contained-html
+        run: uv run pytest --junitxml=test-report.xml --html=report.html --self-contained-html --css=scripts/util/report.css
 
       - name: Build packages
         if: always()
