@@ -1,0 +1,6 @@
+workflow: code_review.workflows.CodeReview
+params: {}
+models:
+  code_review.workflows.CodeReview: example-model
+run:
+  checkpointer: memory
