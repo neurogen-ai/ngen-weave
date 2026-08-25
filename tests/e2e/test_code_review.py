@@ -103,3 +103,80 @@ def test_code_review_run_completes_and_persists_artifact(example_project, fake_p
     call_paths = [r.node_path for r in model_calls]
     assert any(p.endswith("Draft") for p in call_paths)
     assert any(p.endswith("Finalize") for p in call_paths)
+
+
+def test_code_review_kill_and_resume_at_human_review(example_project):
+    """Kill-and-resume across CLI invocations at the human review node.
+
+    The FakeProvider returns an empty draft review so Gate.decide fails and
+    the graph routes to HumanReview, parking the run as waiting_human (the
+    CLI exits 1). The copied config is switched to the sqlite checkpointer so
+    checkpoint state survives in tmp_path between invocations; a fresh process
+    is simulated by resetting the merged registry cache and rebuilding the
+    engine through a second CLI invocation.
+    """
+    from tests.fakes import FakeProvider
+
+    root = example_project
+    diff = json.loads((EXAMPLE_DIR / "request.json").read_text())["diff"]
+    draft_reply = json.dumps({"review": "", "diff": diff})  # empty review -> gate fails
+    finalize_reply = json.dumps({"reviewed_diff": diff, "verdict": "approve"})
+    provider = FakeProvider(replies=[draft_reply, finalize_reply])
+    monkeypatch_target = "ngen_weave_cli.context.default_provider"
+
+    # Force the interrupt path and make checkpoint state survive on disk.
+    config_file = root / "ngw.yaml"
+    config_file.write_text(
+        config_file.read_text().replace("checkpointer: memory", "checkpointer: sqlite")
+    )
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(monkeypatch_target, lambda models_file: provider)
+        first = runner.invoke(
+            app,
+            [
+                "run",
+                WORKFLOW,
+                "-i",
+                str(root / "request.json"),
+                "-c",
+                str(config_file),
+                "--project",
+                "demo",
+            ],
+        )
+        assert first.exit_code == 1, first.output
+        assert "status waiting_human" in first.output
+        prefix = "run "
+        run_id = next(
+            line[len(prefix) :] for line in first.output.splitlines() if line.startswith(prefix)
+        )
+        assert run_id
+    finally:
+        monkeypatch.undo()
+
+    # Fresh process: reset caches and rebuild everything through the CLI again.
+    reset_merged_registry()
+    registry_reset()
+    response_file = root / "response.json"
+    response_file.write_text(json.dumps({"verdict": "approve", "notes": "lgtm"}))
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(monkeypatch_target, lambda models_file: provider)
+        second = runner.invoke(
+            app, ["resume", run_id, "-p", str(response_file), "--project", "demo"]
+        )
+        assert second.exit_code == 0, second.output
+        assert "status completed" in second.output
+    finally:
+        monkeypatch.undo()
+
+    projects = root / ".ngen-weave" / "projects" / "demo"
+    blobs = [p for p in projects.iterdir() if not p.name.endswith(".json")]
+    assert len(blobs) == 1
+    blob = blobs[0]
+    sidecar = json.loads((projects / f"{blob.name}.json").read_text())
+    assert sidecar["name"] == "reviewed_diff"
+    assert sidecar["run_id"] == run_id
+    assert json.loads(blob.read_text()) == diff
