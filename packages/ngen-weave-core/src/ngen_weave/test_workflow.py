@@ -158,8 +158,14 @@ def test_same_short_names_in_different_modules_coexist():
     b = type(
         "Shared",
         (Worker,),
-        {"__module__": "other.module", "__qualname__": "Shared", "input_type": In,
-         "output_type": Out, "prompt": "p", "run": run},
+        {
+            "__module__": "other.module",
+            "__qualname__": "Shared",
+            "input_type": In,
+            "output_type": Out,
+            "prompt": "p",
+            "run": run,
+        },
     )
     validate_structure(a)
     validate_structure(b)
@@ -190,8 +196,13 @@ def test_worker_without_prompt_fails():
     base = type(
         "NoPromptBase",
         (Worker,),
-        {"__module__": __name__, "__qualname__": "NoPromptBase",
-         "input_type": In, "output_type": Out, "_defer_validation": True},
+        {
+            "__module__": __name__,
+            "__qualname__": "NoPromptBase",
+            "input_type": In,
+            "output_type": Out,
+            "_defer_validation": True,
+        },
     )
 
     with pytest.raises(ConfigError, match="prompt"):

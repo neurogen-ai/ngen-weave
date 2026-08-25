@@ -368,9 +368,7 @@ def _check_topology(w: _Wiring, cls: type[Workflow]) -> None:
     for src, dst in all_edges:
         for endpoint in (src, dst):
             if endpoint not in known and endpoint not in (START, END):
-                raise ConfigError(
-                    f"{path}: edge references {endpoint}, never added with add_node"
-                )
+                raise ConfigError(f"{path}: edge references {endpoint}, never added with add_node")
 
     entries = [dst for src, dst, _into in w.edges if src == START]
     cond_from_start = [c for c in w.conditional if c[0] == START]
@@ -472,8 +470,7 @@ def _check_slot_fit(
     fi = input_model.model_fields.get(field_name)
     if fi is None:
         raise ConfigError(
-            f"{path}: slot {field_name!r} on {dst} is not a field of "
-            f"{input_model.__name__}"
+            f"{path}: slot {field_name!r} on {dst} is not a field of {input_model.__name__}"
         )
     if source == START:
         source_output, source_desc = cls.input_type, "the composite input"
@@ -518,9 +515,7 @@ def _check_fanin(w: _Wiring, cls: type[Workflow], path: str) -> None:
                 _check_slot_fit(w, cls, path, dst, START, entry_slot)
                 continue
             child_cls = w.nodes.get(dst)
-            if child_cls is not None and not _accepts(
-                child_cls.input_type, cls.input_type
-            ):
+            if child_cls is not None and not _accepts(child_cls.input_type, cls.input_type):
                 raise ConfigError(
                     f"{path}: entry child {dst} declares input_type "
                     f"{child_cls.input_type.__name__}, which does not accept "
