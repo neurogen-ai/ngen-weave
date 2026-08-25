@@ -1,0 +1,19 @@
+[project]
+name = "ngen-weave-example-code-review"
+version = "0.1.0"
+description = "Canonical code-review example workflow for ngen-weave"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+    "ngen-weave-core",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/code_review"]
+
+[project.entry-points."ngen-weave.workflows"]
+code_review = "code_review.workflows"

@@ -1,0 +1,3 @@
+{
+    "diff": "--- a/app.py\n+++ b/app.py\n@@ -1,3 +1,4 @@\n def greet(name):\n-    return \"hello\"\n+    return f\"hello, {name}\"\n"
+}
