@@ -319,6 +319,18 @@ def _instantiate(cls: type[Workflow]) -> Workflow:
 
 def _check_declarations(cls: type[Workflow]) -> None:
     path = workflow_class_path(cls)
+    _check_type_attrs(cls, path)
+    if issubclass(cls, Worker):
+        _check_worker_prompt(cls, path)
+    if issubclass(cls, Control):
+        _check_control(cls, path)
+    if issubclass(cls, Human):
+        _check_human_state(cls, path)
+    _check_prompt_and_artifacts(cls, path)
+
+
+def _check_type_attrs(cls: type[Workflow], path: str) -> None:
+    """input_type/output_type must be pydantic models; the class path must be well-formed."""
     for attr in ("input_type", "output_type"):
         value = getattr(cls, attr, None)
         if not (isinstance(value, type) and issubclass(value, BaseModel)):
@@ -327,61 +339,75 @@ def _check_declarations(cls: type[Workflow]) -> None:
     if not _CLASS_NAME_RE.match(last_segment):
         raise ConfigError(f"{path}: last path segment {last_segment!r} is not a valid identifier")
 
-    if issubclass(cls, Worker) and getattr(cls, "prompt", None) is None:
+
+def _check_worker_prompt(cls: type[Workflow], path: str) -> None:
+    """A Worker renders its prompt template; it must declare one."""
+    if getattr(cls, "prompt", None) is None:
         raise ConfigError(f"{path}: Worker requires a prompt template or prompt() override")
 
-    if (
-        issubclass(cls, Control)
-        and cls.decide is Control.decide
-        and getattr(cls, "prompt", None) is None
-    ):
+
+def _check_control(cls: type[Workflow], path: str) -> None:
+    """Model-mode Controls need a prompt; every Control outputs required bool 'pass'."""
+    if cls.decide is Control.decide and getattr(cls, "prompt", None) is None:
         raise ConfigError(
             f"{path}: model-mode Control requires a prompt template or a decide() override"
         )
+    f = cls.output_type.model_fields.get("pass")
+    if f is None or not f.is_required() or f.annotation is not bool:
+        raise ConfigError(f"{path}: Control output_type must declare required bool field 'pass'")
 
-    if issubclass(cls, Control):
-        f = cls.output_type.model_fields.get("pass")
-        if f is None or not f.is_required() or f.annotation is not bool:
-            raise ConfigError(
-                f"{path}: Control output_type must declare required bool field 'pass'"
-            )
 
-    if issubclass(cls, Human):
-        state_type = getattr(cls, "state_type", None)
-        if not (isinstance(state_type, type) and issubclass(state_type, BaseModel)):
-            raise ConfigError(f"{path}: Human requires state_type as a pydantic BaseModel subclass")
-        verdict = getattr(cls, "verdict_field", "verdict")
-        vf = state_type.model_fields.get(verdict)
-        ann = vf.annotation if vf is not None else None
-        is_enum = isinstance(ann, type) and issubclass(ann, Enum)
-        is_literal = get_origin(ann) is Literal
-        if not (is_enum or is_literal):
-            raise ConfigError(
-                f"{path}: verdict field {verdict!r} must be on state_type, enum- or literal-typed"
-            )
-        for name, fi in state_type.model_fields.items():
-            if isinstance(fi.annotation, type) and issubclass(fi.annotation, BaseModel):
+def _check_verdict_field(state_type: type[BaseModel], cls: type[Workflow], path: str) -> None:
+    """The routing verdict must be an existing enum- or literal-typed leaf of state_type."""
+    verdict = getattr(cls, "verdict_field", "verdict")
+    vf = state_type.model_fields.get(verdict)
+    ann = vf.annotation if vf is not None else None
+    is_enum = isinstance(ann, type) and issubclass(ann, Enum)
+    is_literal = get_origin(ann) is Literal
+    if not (is_enum or is_literal):
+        raise ConfigError(
+            f"{path}: verdict field {verdict!r} must be on state_type, enum- or literal-typed"
+        )
+
+
+def _check_prefill_paths(cls: type[Workflow], path: str) -> None:
+    """Every prefill slot names a real state field and a resolvable dotted input path."""
+    state_type = cls.state_type
+    for slot, slot_path in getattr(cls, "prefill", {}).items():
+        if slot not in state_type.model_fields:
+            raise ConfigError(f"{path}: prefill targets unknown state field {slot!r}")
+        target: Any = cls.input_type
+        for segment in slot_path.split("."):
+            if not (isinstance(target, type) and issubclass(target, BaseModel)):
                 raise ConfigError(
-                    f"{path}: state_type field {name!r} is a nested model; "
-                    "review artifacts cover flat models only"
+                    f"{path}: prefill path {slot_path!r} traverses below a primitive"
                 )
-        for slot, slot_path in getattr(cls, "prefill", {}).items():
-            if slot not in state_type.model_fields:
-                raise ConfigError(f"{path}: prefill targets unknown state field {slot!r}")
-            target: Any = cls.input_type
-            for segment in slot_path.split("."):
-                if not (isinstance(target, type) and issubclass(target, BaseModel)):
-                    raise ConfigError(
-                        f"{path}: prefill path {slot_path!r} traverses below a primitive"
-                    )
-                fi2 = target.model_fields.get(segment)
-                if fi2 is None:
-                    raise ConfigError(
-                        f"{path}: prefill path {slot_path!r} names no field {segment!r} "
-                        f"of {cls.input_type.__name__}"
-                    )
-                target = fi2.annotation
+            fi2 = target.model_fields.get(segment)
+            if fi2 is None:
+                raise ConfigError(
+                    f"{path}: prefill path {slot_path!r} names no field {segment!r} "
+                    f"of {cls.input_type.__name__}"
+                )
+            target = fi2.annotation
 
+
+def _check_human_state(cls: type[Workflow], path: str) -> None:
+    """Humans need a flat state_type with an enum/literal verdict and valid prefill paths."""
+    state_type = getattr(cls, "state_type", None)
+    if not (isinstance(state_type, type) and issubclass(state_type, BaseModel)):
+        raise ConfigError(f"{path}: Human requires state_type as a pydantic BaseModel subclass")
+    _check_verdict_field(state_type, cls, path)
+    for name, fi in state_type.model_fields.items():
+        if isinstance(fi.annotation, type) and issubclass(fi.annotation, BaseModel):
+            raise ConfigError(
+                f"{path}: state_type field {name!r} is a nested model; "
+                "review artifacts cover flat models only"
+            )
+    _check_prefill_paths(cls, path)
+
+
+def _check_prompt_and_artifacts(cls: type[Workflow], path: str) -> None:
+    """Prompt placeholders resolve against input_type; artifact names exist on output_type."""
     prompt = getattr(cls, "prompt", None)
     if isinstance(prompt, str):
         placeholders = _placeholder_roots(prompt)
