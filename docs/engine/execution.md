@@ -159,9 +159,6 @@ ends immediately with nothing written. `_drive` therefore bumps
 (nested activations under `attempt-N:<node_path>`). Until interrupts arrive
 (Step 9), resuming a stopped run re-executes from the top, seeded with the
 run file's stored input; the record stream keeps every attempt's provenance,
-<<<<<<< HEAD
-which is the honest history.
-=======
 which is the honest history. Interrupt resumes are the exception: they reuse
 the interrupted namespace so the parked superstep can continue (next
 section).
@@ -247,4 +244,3 @@ entirely; tests and validation runs construct it that way.
 Design rationale (addressing scheme, sidecar placement, why human-submission
 records carry a different payload shape) lives in
 `plans/design/artifact-store.md`.
->>>>>>> feat/artifacts
