@@ -188,33 +188,46 @@ def _assembly_plan(
     ("dispatch", senders) takes the output of whichever node dispatched here,
     since a dispatch target's sender is its effective parent.
     """
+    senders = _dispatch_senders(wiring)
+    plan: dict[str, tuple] = {}
+    for dst, parents in incoming.items():
+        if dst != END:
+            plan[dst] = _plan_form(wiring, dst, parents, senders)
+    for target in dispatched:
+        plan.setdefault(target, ("dispatch", sorted(senders.get(target, ()))))
+    return plan
+
+
+def _dispatch_senders(wiring: _Wiring) -> dict[str, set[str]]:
+    """Map each conditional branch target to the nodes that may dispatch into it."""
     senders: dict[str, set[str]] = {}
     for src, branches in wiring.conditional:
         for target in branches.values():
             if target != END:
                 senders.setdefault(target, set()).add(src)
+    return senders
 
-    plan: dict[str, tuple] = {}
-    for dst, parents in incoming.items():
-        if dst == END:
-            continue
-        ordinary = [(s, f) for s, f in parents if s != START]
-        slots = [(s, f) for s, f in ordinary if f is not None]
-        if slots:
-            plan[dst] = ("slots", slots)
-        elif len(ordinary) == 1:
-            plan[dst] = ("single", ordinary[0][0])
-        elif ordinary:
-            dst_cls = wiring.nodes.get(dst)
-            field_name = _single_list_field(dst_cls.input_type) if dst_cls is not None else None
-            plan[dst] = ("collect", field_name, [s for s, _f in ordinary])
-        elif any(s == START for s, _f in parents):
-            plan[dst] = ("entry", None)
-        else:
-            plan[dst] = ("dispatch", sorted(senders.get(dst, ())))
-    for target in dispatched:
-        plan.setdefault(target, ("dispatch", sorted(senders.get(target, ()))))
-    return plan
+
+def _plan_form(
+    wiring: _Wiring,
+    dst: str,
+    parents: list[tuple[str, str | None]],
+    senders: dict[str, set[str]],
+) -> tuple:
+    """Classify one destination's assembly form from its incoming edges."""
+    ordinary = [(s, f) for s, f in parents if s != START]
+    slots = [(s, f) for s, f in ordinary if f is not None]
+    if slots:
+        return ("slots", slots)
+    if len(ordinary) == 1:
+        return ("single", ordinary[0][0])
+    if ordinary:
+        dst_cls = wiring.nodes.get(dst)
+        field_name = _single_list_field(dst_cls.input_type) if dst_cls is not None else None
+        return ("collect", field_name, [s for s, _f in ordinary])
+    if any(s == START for s, _f in parents):
+        return ("entry", None)
+    return ("dispatch", sorted(senders.get(dst, ())))
 
 
 def _assemble_input(plan: dict[str, tuple], path: str, state: dict, node_path: str) -> Any:
@@ -303,6 +316,54 @@ def _levels(nodes: set[str], edges: list[tuple[str, str]]) -> dict[str, int]:
                 level[dst] = base + 1
                 changed = True
     return level
+
+
+def _state_schema(wiring: _Wiring) -> type:
+    """Build the EngineState TypedDict: one dict channel per child plus reserved keys."""
+    from typing import Annotated, TypedDict
+
+    fields: dict[str, type] = {path: dict for path in wiring.nodes}
+    fields[_INPUT_KEY] = dict
+
+    def _last_wins(_old: str, new: str) -> str:
+        return new
+
+    fields[_LAST_KEY] = Annotated[str, _last_wins]
+    fields[_USAGE_KEY] = Annotated[list, operator.add]
+    return TypedDict("EngineState", fields, total=False)  # type: ignore[call-overload]
+
+
+def _wire_static_edges(builder: Any, wiring: _Wiring) -> None:
+    """Add static edges, inserting relay nodes so joins wait for every parent.
+
+    Relay nodes lift shorter parent chains to the target's depth; conditional
+    edges stay direct because dispatch re-entry is their purpose.
+    """
+    static_edges = [(s, d) for s, d, _into in wiring.edges]
+    levels = _levels(set(wiring.nodes), static_edges)
+    back = _back_edges(static_edges)
+    relay_seq = 0
+    for src, dst in static_edges:
+        if dst == END:
+            builder.add_edge(src, END)
+            continue
+        hops = 0
+        if (src, dst) not in back and src != START:
+            hops = max(0, levels[dst] - (levels[src] + 1))
+        elif src == START:
+            hops = max(0, levels[dst])
+        upstream = src
+        for _i in range(hops):
+            relay_seq += 1
+            relay_name = f"__relay_{relay_seq}__"
+
+            async def relay(state: dict) -> dict:
+                return {}
+
+            builder.add_node(relay_name, relay)
+            builder.add_edge(upstream, relay_name)
+            upstream = relay_name
+        builder.add_edge(upstream, dst)
 
 
 class Engine:
@@ -450,51 +511,13 @@ class Engine:
         target fires once, after all its parents wrote. Conditional edges stay
         direct: dispatch re-entry is their purpose.
         """
-        from typing import Annotated, TypedDict
-
         from langgraph.graph import StateGraph
 
-        fields: dict[str, type] = {path: dict for path in wiring.nodes}
-        fields[_INPUT_KEY] = dict
-
-        def _last_wins(_old: str, new: str) -> str:
-            return new
-
-        fields[_LAST_KEY] = Annotated[str, _last_wins]
-        fields[_USAGE_KEY] = Annotated[list, operator.add]
-        schema = TypedDict("EngineState", fields, total=False)  # type: ignore[call-overload]
-        builder = StateGraph(schema)
-
+        builder = StateGraph(_state_schema(wiring))
         node_fns = {path: self._node_fn(cls, cell) for path, cls in wiring.nodes.items()}
         for path, fn in node_fns.items():
             builder.add_node(path, fn)
-
-        static_edges = [(s, d) for s, d, _into in wiring.edges]
-        levels = _levels(set(wiring.nodes), static_edges)
-        back = _back_edges(static_edges)
-        relay_seq = 0
-        for src, dst in static_edges:
-            if dst == END:
-                builder.add_edge(src, END)
-                continue
-            hops = 0
-            if (src, dst) not in back and src != START:
-                hops = max(0, levels[dst] - (levels[src] + 1))
-            elif src == START:
-                hops = max(0, levels[dst])
-            upstream = src
-            for _i in range(hops):
-                relay_seq += 1
-                relay_name = f"__relay_{relay_seq}__"
-
-                async def relay(state: dict) -> dict:
-                    return {}
-
-                builder.add_node(relay_name, relay)
-                builder.add_edge(upstream, relay_name)
-                upstream = relay_name
-            builder.add_edge(upstream, dst)
-
+        _wire_static_edges(builder, wiring)
         for op in ops:
             if op.name != "add_conditional":
                 continue
@@ -502,7 +525,6 @@ class Engine:
             mapping = dict(mapping_pairs)
             router = self._router_fn(src_path, op.router, mapping)
             builder.add_conditional_edges(src_path, router, mapping)
-
         return builder
 
     def _router_fn(self, src_path: str, router: Callable[[dict], str], mapping: dict) -> Callable:
