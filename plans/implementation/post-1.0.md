@@ -598,7 +598,7 @@ Commits: `chore: v1.3 changelog and version bumps`, `docs: nav and index updates
 5. **Plugin surface** (v0.5 Steps 2–4): if the conformance harness (Step 14) finds router-mounting or renderer-registration gaps, fixes land as `fix(core)` commits in Step 14 and are recorded here; no speculative widening before evidence.
 6. **Entry-point groups** (v0.5 pattern): two new groups, `ngen-weave.compile-targets` and `ngen-weave.dispatch-backends`, loaded by the same machinery (Steps 2, 4).
 7. **No semantic changes** to validation, provenance emission, artifact addressing, budget enforcement, or the auth matrix anywhere in this plan. If a step appears to require one, stop: the abstraction list above exists so variation lands at the edges.
-8. **Repo hygiene** (Step 17): a small lint check asserting every source file's module docstring exists and stays under 20 lines (../README.md conventions) lands here, once the codebase is large enough to calibrate the rule against; before then it holds by review only.
+8. **Repo hygiene** (Step 17): a small lint check asserting every source file's module docstring stays within two lines (../README.md conventions) lands here, once the codebase is large enough to calibrate the rule against; before then it holds by review only.
 
 ## Definition of done
 
