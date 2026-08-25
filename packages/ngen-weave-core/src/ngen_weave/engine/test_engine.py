@@ -58,9 +58,7 @@ class TestRunFile:
         assert restored == rf
 
     def test_defaults_for_optional_fields(self):
-        rf = RunFile(
-            format=RUN_FILE_FORMAT, run_id="r", workflow="m.W", status="running", input={}
-        )
+        rf = RunFile(format=RUN_FILE_FORMAT, run_id="r", workflow="m.W", status="running", input={})
         assert rf.output is None
         assert rf.error is None
         assert rf.records == []
@@ -128,9 +126,6 @@ class TestRunStore:
 # --- runner tests ------------------------------------------------------------
 
 
-
-
-
 class Root(BaseModel):
     text: str
 
@@ -167,7 +162,6 @@ def make_chain(children, in_t, out_t):
     return chain
 
 
-
 def make_engine(replies: list[str] | None, tmp_path):
     provider = FakeProvider(replies if replies is not None else ["{}"])
     engine = Engine(provider, RunStore(tmp_path / "runs"), checkpointer="memory")
@@ -179,8 +173,9 @@ async def test_linear_worker_chain_completes(tmp_path):
     w2 = make_worker("W2", Piece, Piece)
     w3 = make_worker("W3", Piece, Final)
     chain = make_chain([w1, w2, w3], Root, Final)
-    engine, provider = make_engine(['{"text":"one"}', '{"text":"two"}', '{"text":"three"}'],
-        tmp_path)
+    engine, provider = make_engine(
+        ['{"text":"one"}', '{"text":"two"}', '{"text":"three"}'], tmp_path
+    )
 
     result = await engine.run(chain, Root(text="hi"))
 
@@ -317,8 +312,9 @@ async def test_unmapped_router_label_is_data_error(tmp_path):
         g.add_conditional_edges(gate, lambda s: "nowhere", {"known": fallback})
         g.add_edge(fallback, END)
 
-    chain = type("BadBranches", (Workflow,), {"input_type": Piece, "output_type": Final,
-        "build": build})
+    chain = type(
+        "BadBranches", (Workflow,), {"input_type": Piece, "output_type": Final, "build": build}
+    )
     register(chain, "test")
     engine, _ = make_engine(None, tmp_path)
 
@@ -396,8 +392,9 @@ async def test_collected_fanin_assembles_list_field(tmp_path):
         g.add_edge(r3, reducer)
         g.add_edge(reducer, END)
 
-    chain = type("Collected", (Workflow,), {"input_type": Root, "output_type": Final,
-        "build": build})
+    chain = type(
+        "Collected", (Workflow,), {"input_type": Root, "output_type": Final, "build": build}
+    )
     register(chain, "test")
     engine, provider = make_engine(
         ['{"text":"a"}', '{"text":"b"}', '{"text":"c"}', '{"text":"final"}'], tmp_path
@@ -425,8 +422,9 @@ async def test_dispatch_target_receives_sender_output(tmp_path):
         g.add_conditional_edges(gate, lambda s: "only", {"only": after})
         g.add_edge(after, END)
 
-    chain = type("Dispatched", (Workflow,), {"input_type": Piece, "output_type": Final,
-        "build": build})
+    chain = type(
+        "Dispatched", (Workflow,), {"input_type": Piece, "output_type": Final, "build": build}
+    )
     register(chain, "test")
     engine, provider = make_engine(['{"text":"after-out"}'], tmp_path)
 
@@ -446,8 +444,12 @@ async def test_sqlite_checkpointer_run_and_resume_completed(tmp_path):
     assert result.status == "completed"
 
     fresh_store = RunStore(tmp_path / "runs")
-    engine2 = Engine(FakeProvider(['{"text":"ignored"}']), fresh_store, checkpointer="sqlite",
-        db_path=tmp_path / "cp.db")
+    engine2 = Engine(
+        FakeProvider(['{"text":"ignored"}']),
+        fresh_store,
+        checkpointer="sqlite",
+        db_path=tmp_path / "cp.db",
+    )
     again = await engine2.resume(result.run_id)
     assert again.status == "completed"
     assert again.output == Final(text="persisted")

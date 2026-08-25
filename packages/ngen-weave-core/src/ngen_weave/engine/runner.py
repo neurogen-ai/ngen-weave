@@ -132,9 +132,7 @@ def parse_output(output_type: type[BaseModel], text: str, node_path: str) -> Bas
 def _single_list_field(input_model: type[BaseModel]) -> str | None:
     """The one list field of an input model, for collected fan-in."""
     names = [
-        name
-        for name, fi in input_model.model_fields.items()
-        if get_origin(fi.annotation) is list
+        name for name, fi in input_model.model_fields.items() if get_origin(fi.annotation) is list
     ]
     return names[0] if len(names) == 1 else None
 
