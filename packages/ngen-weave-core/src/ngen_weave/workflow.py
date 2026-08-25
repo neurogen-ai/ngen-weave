@@ -1,27 +1,4 @@
-"""Workflow definition: base classes, graph wiring, import-time validation.
-
-Workflow is the single abstraction every node kind derives from; identity is
-the fully-qualified class path, so plugins never collide with core classes.
-Composites wire children through GraphBuilder inside build(); validation is an
-import-time dry-run compile (one build against a throwaway StateGraph) plus a
-static lint over build()'s source, so a broken or stateful definition raises
-before any run. Model assignment never lives on classes: bindings from the run
-config's models section resolve per leaf at compile time.
-
-Classes:
-    Workflow: Base class declaring schemas, prompt, and artifact names.
-    RunContext: Per-activation execution context handed to run().
-    Worker: Leaf node that renders a prompt and calls the model.
-    Control: Leaf node producing a boolean verdict for routing.
-    Human: Leaf node pausing the run for human review.
-    AgentNode: Declared seam for agent execution, mocked in v0.1.
-    GraphBuilder: Protocol build() receives for wiring nodes and edges.
-
-Functions:
-    workflow_class_path: Fully-qualified class path of a workflow class or instance.
-    validate_structure: Full import-time validation pass over a workflow class.
-    resolve_model_variant: Resolve a leaf's model variant from exact-path bindings.
-"""
+"""Workflow definition: base classes, graph wiring, import-time validation."""
 
 from __future__ import annotations
 

@@ -1,9 +1,4 @@
-"""ngen-weave CLI entry point.
-
-Typer application exposing the `ngen-weave` and `ngw` console scripts.
-Commands are added by later milestones; this module ships the app shell
-with a --version flag reading the installed distribution metadata.
-"""
+"""ngen-weave CLI entry point."""
 
 from importlib.metadata import version
 
