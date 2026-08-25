@@ -48,11 +48,12 @@ The `Workflow` class is the only abstraction that matters. Everything else speci
 
 ```python
 class CodeReview(Workflow):
-    input_type = ReviewInput        # pydantic model
+    input_type = ReviewInput  # pydantic model
     output_type = ReviewOutput
 
     def build(self, g):
-        g.add_node(self.draft); g.add_node(self.gate)   # composites declare structure
+        g.add_node(self.draft)
+        g.add_node(self.gate)  # composites declare structure
 ```
 
 Rules:
