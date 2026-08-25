@@ -1,4 +1,5 @@
 """Workflow definition: base classes, graph wiring, import-time validation."""
+
 from __future__ import annotations
 
 import ast

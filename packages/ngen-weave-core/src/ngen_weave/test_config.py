@@ -96,9 +96,7 @@ def test_unknown_workflow_fails(env: Path) -> None:
 
 
 def test_unknown_top_level_key_fails(env: Path) -> None:
-    cfg_path = write_config(
-        env, "ngw.yaml", f"workflow: {Probe.__module__}.Probe\nmodelz: {{}}\n"
-    )
+    cfg_path = write_config(env, "ngw.yaml", f"workflow: {Probe.__module__}.Probe\nmodelz: {{}}\n")
     with pytest.raises(ConfigError, match="unknown keys.*modelz"):
         load_config(cfg_path, registry_all())
 
