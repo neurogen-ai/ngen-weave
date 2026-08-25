@@ -125,12 +125,13 @@ def resume(
     response_file: Path | None = typer.Option(
         None, "-p", "--response", help="JSON human-review response."
     ),
+    project: str | None = typer.Option(None, "--project", help="Project name for artifacts."),
 ) -> None:
     """Continue a run from its checkpoint; exit 0 only on a terminal status."""
     try:
         payload = _read_json(response_file) if response_file is not None else None
         merged_registry()  # the run's workflow must be discoverable to resume it
-        app_ctx = _build_engine(None)
+        app_ctx = _build_engine(None, project=project)
         result = asyncio.run(app_ctx.engine.resume(run_id, payload))
     except NgWeaveError as exc:
         _fail(exc)
