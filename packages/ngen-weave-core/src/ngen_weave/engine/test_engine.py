@@ -7,10 +7,7 @@ test_nesting.py.
 """
 
 from pathlib import Path
-<<<<<<< HEAD
-=======
 from typing import Literal
->>>>>>> feat/artifacts
 
 import pytest
 from pydantic import BaseModel, Field
@@ -22,13 +19,6 @@ from ngen_weave.engine import Engine
 from ngen_weave.engine.runner import _INPUT_KEY, _LAST_KEY  # noqa: F401
 from ngen_weave.engine.state import RUN_FILE_FORMAT, RunFile
 from ngen_weave.engine.store import RunStore
-<<<<<<< HEAD
-from ngen_weave.errors import ConfigError, InfraError
-from ngen_weave.models.provider import Completion
-from ngen_weave.provenance import ProvenanceRecord
-from ngen_weave.registry import register
-from ngen_weave.workflow import END, START, Control, Worker, Workflow, workflow_class_path
-=======
 from ngen_weave.errors import ConfigError, DataError, InfraError
 from ngen_weave.models.provider import Completion
 from ngen_weave.provenance import ProvenanceRecord
@@ -42,7 +32,6 @@ from ngen_weave.workflow import (
     Workflow,
     workflow_class_path,
 )
->>>>>>> feat/artifacts
 
 
 @pytest.fixture(autouse=True)
@@ -78,13 +67,9 @@ class TestRunFile:
         assert restored == rf
 
     def test_defaults_for_optional_fields(self):
-<<<<<<< HEAD
-        rf = RunFile(format=RUN_FILE_FORMAT, run_id="r", workflow="m.W", status="running", input={})
-=======
         rf = RunFile(
             format=RUN_FILE_FORMAT, run_id="r", workflow="m.W", status="running", input={}
         )
->>>>>>> feat/artifacts
         assert rf.output is None
         assert rf.error is None
         assert rf.records == []
@@ -152,12 +137,9 @@ class TestRunStore:
 # --- runner tests ------------------------------------------------------------
 
 
-<<<<<<< HEAD
-=======
 
 
 
->>>>>>> feat/artifacts
 class Root(BaseModel):
     text: str
 
@@ -194,10 +176,7 @@ def make_chain(children, in_t, out_t):
     return chain
 
 
-<<<<<<< HEAD
-=======
 
->>>>>>> feat/artifacts
 def make_engine(replies: list[str] | None, tmp_path):
     provider = FakeProvider(replies if replies is not None else ["{}"])
     engine = Engine(provider, RunStore(tmp_path / "runs"), checkpointer="memory")
@@ -209,14 +188,8 @@ async def test_linear_worker_chain_completes(tmp_path):
     w2 = make_worker("W2", Piece, Piece)
     w3 = make_worker("W3", Piece, Final)
     chain = make_chain([w1, w2, w3], Root, Final)
-<<<<<<< HEAD
-    engine, provider = make_engine(
-        ['{"text":"one"}', '{"text":"two"}', '{"text":"three"}'], tmp_path
-    )
-=======
     engine, provider = make_engine(['{"text":"one"}', '{"text":"two"}', '{"text":"three"}'],
         tmp_path)
->>>>>>> feat/artifacts
 
     result = await engine.run(chain, Root(text="hi"))
 
@@ -353,14 +326,8 @@ async def test_unmapped_router_label_is_data_error(tmp_path):
         g.add_conditional_edges(gate, lambda s: "nowhere", {"known": fallback})
         g.add_edge(fallback, END)
 
-<<<<<<< HEAD
-    chain = type(
-        "BadBranches", (Workflow,), {"input_type": Piece, "output_type": Final, "build": build}
-    )
-=======
     chain = type("BadBranches", (Workflow,), {"input_type": Piece, "output_type": Final,
         "build": build})
->>>>>>> feat/artifacts
     register(chain, "test")
     engine, _ = make_engine(None, tmp_path)
 
@@ -438,14 +405,8 @@ async def test_collected_fanin_assembles_list_field(tmp_path):
         g.add_edge(r3, reducer)
         g.add_edge(reducer, END)
 
-<<<<<<< HEAD
-    chain = type(
-        "Collected", (Workflow,), {"input_type": Root, "output_type": Final, "build": build}
-    )
-=======
     chain = type("Collected", (Workflow,), {"input_type": Root, "output_type": Final,
         "build": build})
->>>>>>> feat/artifacts
     register(chain, "test")
     engine, provider = make_engine(
         ['{"text":"a"}', '{"text":"b"}', '{"text":"c"}', '{"text":"final"}'], tmp_path
@@ -473,14 +434,8 @@ async def test_dispatch_target_receives_sender_output(tmp_path):
         g.add_conditional_edges(gate, lambda s: "only", {"only": after})
         g.add_edge(after, END)
 
-<<<<<<< HEAD
-    chain = type(
-        "Dispatched", (Workflow,), {"input_type": Piece, "output_type": Final, "build": build}
-    )
-=======
     chain = type("Dispatched", (Workflow,), {"input_type": Piece, "output_type": Final,
         "build": build})
->>>>>>> feat/artifacts
     register(chain, "test")
     engine, provider = make_engine(['{"text":"after-out"}'], tmp_path)
 
@@ -500,35 +455,18 @@ async def test_sqlite_checkpointer_run_and_resume_completed(tmp_path):
     assert result.status == "completed"
 
     fresh_store = RunStore(tmp_path / "runs")
-<<<<<<< HEAD
-    engine2 = Engine(
-        FakeProvider(['{"text":"ignored"}']),
-        fresh_store,
-        checkpointer="sqlite",
-        db_path=tmp_path / "cp.db",
-    )
-=======
     engine2 = Engine(FakeProvider(['{"text":"ignored"}']), fresh_store, checkpointer="sqlite",
         db_path=tmp_path / "cp.db")
->>>>>>> feat/artifacts
     again = await engine2.resume(result.run_id)
     assert again.status == "completed"
     assert again.output == Final(text="persisted")
 
 
-<<<<<<< HEAD
-async def test_resume_with_payload_before_human_support_raises(tmp_path):
-    chain = make_chain([make_worker("W1", Root, Final)], Root, Final)
-    engine, _ = make_engine(['{"text":"out"}'], tmp_path)
-    result = await engine.run(chain, Root(text="hi"))
-    with pytest.raises(ConfigError, match="later step"):
-=======
 async def test_resume_with_payload_on_non_waiting_run_raises(tmp_path):
     chain = make_chain([make_worker("W1", Root, Final)], Root, Final)
     engine, _ = make_engine(['{"text":"out"}'], tmp_path)
     result = await engine.run(chain, Root(text="hi"))
     with pytest.raises(ConfigError, match="not waiting for human input"):
->>>>>>> feat/artifacts
         await engine.resume(result.run_id, payload={"verdict": "approve"})
 
 
@@ -607,8 +545,6 @@ async def test_transient_infra_failure_recovers_within_budget(tmp_path, monkeypa
         r for r in rf.records if r.kind == "node_activation" and r.payload.get("status") == "retry"
     ]
     assert len(retries) == 1
-<<<<<<< HEAD
-=======
 
 
 # --- human nodes: artifacts, interrupts, resume ------------------------------
@@ -837,4 +773,3 @@ async def test_resume_completed_run_is_still_a_noop(tmp_path):
 
     assert again.status == "completed"
     assert again.output == done.output
->>>>>>> feat/artifacts

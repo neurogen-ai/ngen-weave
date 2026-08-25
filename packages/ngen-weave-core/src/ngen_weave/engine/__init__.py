@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-"""Sequential workflow execution on LangGraph."""
-=======
 """Sequential workflow execution on LangGraph.
 
 Modules:
@@ -12,7 +9,6 @@ Classes:
     Engine: Compile, run, and resume workflows on LangGraph.
     CompiledGraph: A compiled workflow plus its frozen per-node variant table.
 """
->>>>>>> feat/artifacts
 
 from ngen_weave.engine.runner import CompiledGraph, Engine
 from ngen_weave.engine.state import RunFile, RunResult, RunStatus

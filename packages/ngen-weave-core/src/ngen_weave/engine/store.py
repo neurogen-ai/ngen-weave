@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-"""Single-writer persistence for run files."""
-=======
 """Single-writer persistence for run files.
 
 RunStore owns the .ngen-weave/runs/ directory: every read and write of run
@@ -11,7 +8,6 @@ always valid JSON, always sufficient to re-run.
 Classes:
     RunStore: Create, load, save, append to, and list run files.
 """
->>>>>>> feat/artifacts
 
 from __future__ import annotations
 
@@ -86,8 +82,6 @@ class RunStore:
     def list(self) -> list[RunFile]:
         """Return every stored run file, ordered by run id."""
         return [self.load(p.stem) for p in sorted(self.runs_dir.glob("*.json"))]
-<<<<<<< HEAD
-=======
 
     # --- review artifacts -----------------------------------------------------
 
@@ -116,4 +110,3 @@ class RunStore:
         if not isinstance(data, dict) or "response" not in data:
             raise ConfigError(f"review artifact {path} lacks a response section")
         return data
->>>>>>> feat/artifacts
