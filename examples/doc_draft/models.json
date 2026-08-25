@@ -1,0 +1,11 @@
+{
+    "defaultVariant": "sonnet",
+    "variants": {
+        "haiku": {
+            "model": "anthropic/claude-3-5-haiku-latest"
+        },
+        "sonnet": {
+            "model": "anthropic/claude-3-5-sonnet-latest"
+        }
+    }
+}
