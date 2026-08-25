@@ -805,6 +805,83 @@ def _is_set_iteration(iter_expr: ast.expr) -> bool:
     )
 
 
+class _BuildLinter:
+    """Walk build()'s AST once and reject environment-dependent wiring.
+
+    Builds the stored-name and parameter sets once, then applies each
+    prohibition in a dedicated method so no single check exceeds the mccabe
+    ceiling. A violation raises ConfigError naming the offending line.
+    """
+
+    def __init__(self, path: str, func: ast.FunctionDef) -> None:
+        self._path = path
+        self._stored = {
+            n.id for n in ast.walk(func) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+        }
+        self._params = {
+            a.arg for a in (*func.args.posonlyargs, *func.args.args, *func.args.kwonlyargs)
+        }
+        self._builtins = set(dir(builtins))
+
+    def is_outer_root(self, name: str | None) -> bool:
+        return name is not None and name not in self._stored and name not in self._params
+
+    def fail(self, line: int, message: str) -> None:
+        raise ConfigError(f"{self._path}: build() line {line}: {message}")
+
+    def lint(self, func: ast.FunctionDef) -> None:
+        for node in ast.walk(func):
+            self._check_forbidden_calls(node)
+            self._check_env_reads(node)
+            self._check_mutation(node)
+            self._check_set_iteration(node)
+
+    def _check_forbidden_calls(self, node: ast.AST) -> None:
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            return
+        dotted = _dotted(node.func.value)
+        head = dotted.split(".")[0] if dotted else None
+        if head in _CLOCK_RANDOM_MODULES:
+            self.fail(
+                node.lineno, f"call into {head}.*; build() must not depend on the environment"
+            )
+        if (
+            dotted is not None
+            and (dotted == "datetime" or dotted.endswith(".datetime"))
+            and node.func.attr in {"now", "utcnow"}
+        ):
+            self.fail(node.lineno, "datetime.now/utcnow; build() must not read the clock")
+
+    def _check_env_reads(self, node: ast.AST) -> None:
+        if not isinstance(node, (ast.Attribute, ast.Subscript)):
+            return
+        dotted = _dotted(node)
+        if dotted is not None and dotted.startswith("os.environ"):
+            self.fail(node.lineno, "read of os.environ; build() must not depend on the environment")
+
+    def _check_mutation(self, node: ast.AST) -> None:
+        if not isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            return
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            if not isinstance(target, (ast.Attribute, ast.Subscript)):
+                continue
+            root = _root_name(target)
+            if root == "self":
+                self.fail(node.lineno, "mutation through self; build() must be stateless")
+            elif self.is_outer_root(root) and root not in self._builtins:
+                self.fail(node.lineno, f"mutation of global state ({root}); build() must be pure")
+
+    def _check_set_iteration(self, node: ast.AST) -> None:
+        if not isinstance(node, (ast.For, ast.comprehension)):
+            return
+        if _is_set_iteration(node.iter):
+            self.fail(
+                getattr(node.iter, "lineno", 0),
+                "iterating over a set; set order is nondeterministic, iterate a list or tuple",
+            )
+
+
 def _lint_build_source(cls: type[Workflow]) -> None:
     """Enforce the build() wires-not-computes contract statically.
 
@@ -821,53 +898,7 @@ def _lint_build_source(cls: type[Workflow]) -> None:
     except (OSError, TypeError, SyntaxError):
         return
     func = tree.body[0]
-    stored = {
-        n.id for n in ast.walk(func) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
-    }
-    params = {a.arg for a in (*func.args.posonlyargs, *func.args.args, *func.args.kwonlyargs)}
-    builtin_names = set(dir(builtins))
-
-    def is_outer_root(name: str | None) -> bool:
-        return name is not None and name not in stored and name not in params
-
-    def fail(line: int, message: str) -> None:
-        raise ConfigError(f"{path}: build() line {line}: {message}")
-
-    for node in ast.walk(func):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            dotted = _dotted(node.func.value)
-            head = dotted.split(".")[0] if dotted else None
-            if head in _CLOCK_RANDOM_MODULES:
-                fail(node.lineno, f"call into {head}.*; build() must not depend on the environment")
-            if (
-                dotted is not None
-                and (dotted == "datetime" or dotted.endswith(".datetime"))
-                and node.func.attr in {"now", "utcnow"}
-            ):
-                fail(node.lineno, "datetime.now/utcnow; build() must not read the clock")
-        if isinstance(node, (ast.Attribute, ast.Subscript)):
-            dotted = _dotted(node)
-            if dotted is not None and dotted.startswith("os.environ"):
-                fail(node.lineno, "read of os.environ; build() must not depend on the environment")
-        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                if not isinstance(target, (ast.Attribute, ast.Subscript)):
-                    continue
-                root = _root_name(target)
-                if root == "self":
-                    fail(node.lineno, "mutation through self; build() must be stateless")
-                elif is_outer_root(root) and root not in builtin_names:
-                    fail(node.lineno, f"mutation of global state ({root}); build() must be pure")
-        iterators: list[ast.expr] = []
-        if isinstance(node, (ast.For, ast.comprehension)):
-            iterators.append(node.iter)
-        for it in iterators:
-            if _is_set_iteration(it):
-                fail(
-                    getattr(it, "lineno", 0),
-                    "iterating over a set; set order is nondeterministic, iterate a list or tuple",
-                )
+    _BuildLinter(path, func).lint(func)
 
 
 # --- model binding ----------------------------------------------------------
