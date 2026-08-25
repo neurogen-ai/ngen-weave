@@ -689,6 +689,38 @@ def test_slot_source_type_mismatch_fails():
         validate_structure(Composite)
 
 
+def test_union_slot_fan_in_passes():
+    class UnionMerge(BaseModel):
+        draft: DraftOut | CritiqueOut
+        critique: CritiqueOut
+
+    Composite = _fanin_composite(
+        UnionMerge,
+        lambda g, left, right, synth: (
+            g.add_edge(right, synth, into="draft"),
+            g.add_edge(left, synth, into="critique"),
+        ),
+    )
+    validate_structure(Composite)
+
+
+def test_scalar_slot_mismatch_fails():
+    class ScalarMerge(BaseModel):
+        draft: str  # no model output fits a str slot
+        critique: CritiqueOut
+
+    Composite = _fanin_composite(
+        ScalarMerge,
+        lambda g, left, right, synth: (
+            g.add_edge(right, synth, into="draft"),
+            g.add_edge(left, synth, into="critique"),
+        ),
+        defer=True,
+    )
+    with pytest.raises(ConfigError, match="does not fit"):
+        validate_structure(Composite)
+
+
 def test_plain_edge_into_multi_parent_fails():
     Composite = _fanin_composite(
         MergeInput,

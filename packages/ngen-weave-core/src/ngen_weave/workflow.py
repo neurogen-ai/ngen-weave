@@ -36,7 +36,7 @@ from enum import Enum
 from string import Formatter
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, get_args, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from ngen_weave.errors import ConfigError
 
@@ -284,6 +284,39 @@ def _wiring_from(ops: list[_Op], node_classes: dict[str, type[Workflow]]) -> _Wi
     return w
 
 
+_CONTAINER_ORIGINS = frozenset({list, set, frozenset, tuple, dict})
+
+
+def _annotation_name(annotation: Any) -> str:
+    """Readable name for error messages; handles parameterized annotations."""
+    origin = get_origin(annotation)
+    if origin is None:
+        return getattr(annotation, "__name__", str(annotation))
+    args = ", ".join(_annotation_name(a) for a in get_args(annotation))
+    return f"{origin.__name__ if hasattr(origin, '__name__') else origin}[{args}]"
+
+
+def _accepts(annotation: Any, source_type: type[BaseModel]) -> bool:
+    """Whether a source output type fits an input annotation, per pydantic.
+
+    Probes with an unvalidated instance of the source model so the check stays
+    import-time only: smart-mode validation accepts subclass instances and
+    rejects unrelated types without needing real field values.
+
+    Container annotations are exempt rather than checked: a model instance
+    iterates its fields, so pydantic would coerce it into list[...] even
+    though the runtime port delivers a dict, which never fits. Collected
+    fan-in covers list slots structurally instead.
+    """
+    if get_origin(annotation) in _CONTAINER_ORIGINS:
+        return True
+    try:
+        TypeAdapter(annotation).validate_python(source_type.model_construct())
+        return True
+    except ValidationError:
+        return False
+
+
 def _instantiate(cls: type[Workflow]) -> Workflow:
     try:
         return cls()
@@ -397,7 +430,7 @@ def _check_topology(w: _Wiring, cls: type[Workflow]) -> None:
     cond_to_end = [src for src, branches in w.conditional for t in branches.values() if t == END]
     for term in terminals + cond_to_end:
         child_cls = w.nodes.get(term)
-        if child_cls is not None and not issubclass(child_cls.output_type, cls.output_type):
+        if child_cls is not None and not _accepts(cls.output_type, child_cls.output_type):
             raise ConfigError(
                 f"{path}: terminal child {term} emits "
                 f"{child_cls.output_type.__name__}, which is not a subtype of the "
@@ -452,8 +485,8 @@ def _check_slot_fit(
     """One into= edge: the slot must exist on dst's input and accept its source.
 
     START counts as a pseudo-source whose output_type is the composite's
-    input_type (rule 4). Deep compatibility beyond a trivial subclass check
-    stays runtime port validation.
+    input_type (rule 4). The fit check delegates to pydantic, so parameterized
+    annotations (list[Model], unions, scalars) are checked too, not skipped.
     """
     child_cls = w.nodes.get(dst)
     if child_cls is None:
@@ -465,17 +498,14 @@ def _check_slot_fit(
             f"{path}: slot {field_name!r} on {dst} is not a field of "
             f"{input_model.__name__}"
         )
-    ann = fi.annotation
-    if not (isinstance(ann, type) and issubclass(ann, BaseModel)):
-        return
     if source == START:
         source_output, source_desc = cls.input_type, "the composite input"
     else:
         source_output, source_desc = w.nodes[source].output_type, f"{source}.output_type"
-    if not (isinstance(source_output, type) and issubclass(source_output, ann)):
+    if not _accepts(fi.annotation, source_output):
         raise ConfigError(
             f"{path}: {source_desc} {source_output.__name__} does not fit slot "
-            f"{field_name!r} of type {ann.__name__} on {dst}"
+            f"{field_name!r} of type {_annotation_name(fi.annotation)} on {dst}"
         )
 
 
@@ -511,8 +541,8 @@ def _check_fanin(w: _Wiring, cls: type[Workflow], path: str) -> None:
                 _check_slot_fit(w, cls, path, dst, START, entry_slot)
                 continue
             child_cls = w.nodes.get(dst)
-            if child_cls is not None and not issubclass(
-                cls.input_type, child_cls.input_type
+            if child_cls is not None and not _accepts(
+                child_cls.input_type, cls.input_type
             ):
                 raise ConfigError(
                     f"{path}: entry child {dst} declares input_type "
