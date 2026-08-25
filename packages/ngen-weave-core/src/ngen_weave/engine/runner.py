@@ -42,6 +42,7 @@ except ImportError:  # pragma: no cover
 
 from pydantic import BaseModel, ValidationError
 
+from ngen_weave.artifacts import ArtifactMeta, ArtifactStore, hash_value
 from ngen_weave.engine.state import RunResult, RunStatus
 from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import ConfigError, DataError, InfraError
@@ -315,6 +316,8 @@ class Engine:
         store: Sole writer of run state under .ngen-weave/runs/.
         checkpointer: "sqlite" (durable, default) or "memory" (tests).
         db_path: SQLite checkpoint database path.
+        artifacts: Optional content-addressed store; workflows declaring
+            artifacts persist nothing while it stays unset (tests mostly).
         max_retries: Retries after the initial attempt for InfraError only.
         retry_backoff_ms: Exponential backoff base in milliseconds; each retry
             waits twice the previous delay.
@@ -328,6 +331,7 @@ class Engine:
         db_path: Path = Path(".ngen-weave/checkpoints.db"),
         max_retries: int = 3,
         retry_backoff_ms: int = 1000,
+        artifacts: ArtifactStore | None = None,
     ) -> None:
         if checkpointer not in {"sqlite", "memory"}:
             raise ConfigError(f"checkpointer must be 'sqlite' or 'memory', got {checkpointer!r}")
@@ -337,6 +341,7 @@ class Engine:
         self.db_path = Path(db_path)
         self.max_retries = max_retries
         self.retry_backoff_ms = retry_backoff_ms
+        self._artifacts = artifacts
         self._compiled: dict[tuple, CompiledGraph] = {}
         self._compiling: set[int] = set()  # ids of classes mid-compilation
         self._memory: Any = None  # root-level memory checkpointer
@@ -571,6 +576,11 @@ class Engine:
                 emit("node_activation", {"status": "invalid"})
                 raise
 
+            # Declared artifacts persist before the ok record lands, so the
+            # scope's completion implies its artifacts are already on disk.
+            if cls.artifacts and self._artifacts is not None:
+                self._write_artifacts(cls, model.model_dump(), output.model_dump(), ctx)
+
             metadata = RunMetadata(
                 iterations=attempt,
                 tokens_in_context=sum(u[0] for u in usage),
@@ -583,6 +593,41 @@ class Engine:
             return {path: output.model_dump(), _LAST_KEY: path, _USAGE_KEY: usage}
 
         return fn
+
+    def _write_artifacts(
+        self,
+        cls: type[Workflow],
+        input_dump: dict,
+        output_dump: dict,
+        ctx: RunContext,
+    ) -> None:
+        """Persist each declared field of a successful activation's output.
+
+        Every declared name must exist on output_type; import-time validation
+        already guarantees that, so this only serializes, stores, links, and
+        emits one artifact_write record per field naming the producing
+        activation and the input hashes it was computed from.
+        """
+        assert self._artifacts is not None
+        input_hashes = {name: hash_value(value) for name, value in input_dump.items()}
+        for name in cls.artifacts:
+            data = json.dumps(output_dump[name], sort_keys=True, ensure_ascii=False).encode("utf-8")
+            meta = ArtifactMeta(
+                run_id=ctx.run_id,
+                node_path=ctx.node_path,
+                name=name,
+                input_hashes=input_hashes,
+            )
+            record = self._artifacts.put(data, meta)
+            self._artifacts.link_meta(record)
+            ctx.emit(
+                "artifact_write",
+                {
+                    "artifact_sha256": record.sha256,
+                    "name": name,
+                    "input_hashes": input_hashes,
+                },
+            )
 
     async def _execute_human(
         self,
@@ -907,6 +952,21 @@ class Engine:
         except Exception as exc:
             error = {"type": type(exc).__name__, "message": str(exc)}
         if status == "completed":
+            # The root workflow is not a node in its own graph, so artifacts
+            # it declares persist here, beside its scope's ok record.
+            root_path = workflow_class_path(compiled.root)
+            if compiled.root.artifacts and self._artifacts is not None:
+                self._write_artifacts(
+                    compiled.root,
+                    self.store.load(run_id).input,
+                    output_dump,
+                    RunContext(
+                        run_id=run_id,
+                        node_path=root_path,
+                        emit=self._emitter(run_id, root_path),
+                        provider=self.provider,
+                    ),
+                )
             metadata = RunMetadata(
                 iterations=1,
                 tokens_in_context=sum(u[0] for u in sink),
