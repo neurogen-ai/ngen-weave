@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 stages=("$@")
 if [ ${#stages[@]} -eq 0 ]; then
-  stages=(deps lint test build)
+  stages=(deps lint fmt test build)
 fi
 
 for stage in "${stages[@]}"; do
