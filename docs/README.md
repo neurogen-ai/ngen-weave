@@ -12,6 +12,11 @@ documentation or is deleted.
 
 Contents:
 
+<<<<<<< HEAD
+=======
+- [cli.md](cli.md): the `ngen-weave` commands, how discovery builds the
+  workflow namespace, and where runs and models live on disk.
+>>>>>>> feat/cli-commands
 - [engine/execution.md](engine/execution.md): how Engine.compile turns a
   workflow class into a runnable LangGraph graph, how inputs are assembled,
   how fan-in joins stay correct, and how runs are recorded and resumed.

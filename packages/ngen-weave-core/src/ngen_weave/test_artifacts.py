@@ -146,11 +146,7 @@ async def _run(chain, tmp_path, artifacts_store=None, replies=None):
 
 
 def _writes(engine, run_id):
-    return [
-        r
-        for r in engine.store.load(run_id).records
-        if r.kind == "artifact_write"
-    ]
+    return [r for r in engine.store.load(run_id).records if r.kind == "artifact_write"]
 
 
 async def test_declared_artifacts_persist_and_emit_provenance(tmp_path: Path):
