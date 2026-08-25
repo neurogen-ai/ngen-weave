@@ -220,3 +220,27 @@ that, and the result validates against `output_type` like any leaf output.
 Routing out of the human happens through ordinary conditional edges declared
 in `build()`; routers read the verdict field of the submitted state exactly
 like control routers read `pass`.
+
+## Content-addressed artifacts
+
+A workflow declaring `artifacts` gets each named output field persisted on
+every successful activation. The engine serializes the field value with
+canonical JSON (`sort_keys=True`, `ensure_ascii=False`), stores the bytes
+under `.ngen-weave/projects/<project>/<sha256>`, writes a sidecar JSON
+beside the blob (run_id, node_path, name, input_hashes, sha256), and emits
+`artifact_write` with `{"artifact_sha256", "name", "input_hashes"}`.
+Identical bytes never rewrite: the content hash is the address, so retries
+and repeat values deduplicate for free.
+
+Both wired children and the run root persist through one code path
+(`_write_artifacts`); the root is not a node in its own graph, so its
+activation completes in `_drive`, which calls the same helper with its
+stored input dump before emitting the root scope's ok record. Ordering is
+deliberate: artifact records land before their scope's `node_activation
+{status: ok}`, so a completed scope in the stream implies its artifacts are
+already durable. An engine built without an ArtifactStore skips persistence
+entirely; tests and validation runs construct it that way.
+
+Design rationale (addressing scheme, sidecar placement, why human-submission
+records carry a different payload shape) lives in
+`plans/design/artifact-store.md`.
