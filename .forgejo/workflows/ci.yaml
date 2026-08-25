@@ -30,16 +30,18 @@ jobs:
 
       - name: Test (pytest)
         if: always()
-        run: uv run pytest --junitxml=test-report.xml
+        run: uv run pytest --junitxml=test-report.xml --html=report.html --self-contained-html
 
       - name: Build packages
         if: always()
         run: scripts/ci/build.sh
 
-      - name: Upload test report
+      - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v3
         with:
-          name: test-report
-          path: test-report.xml
+          name: test-reports
+          path: |
+            report.html
+            test-report.xml
           if-no-files-found: ignore
