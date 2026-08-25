@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from ngen_weave.artifacts import ArtifactStore
 from ngen_weave.config import ResolvedConfig, RunSettings
 from ngen_weave.discovery import discover, discover_entry_points
 from ngen_weave.engine.runner import Engine
@@ -32,6 +33,7 @@ class AppContext:
 
     engine: Engine
     store: RunStore
+    artifacts: ArtifactStore | None
 
 
 def reset_merged_registry() -> None:
@@ -101,17 +103,21 @@ class LazyProvider:
 def _build_engine(
     config: ResolvedConfig | None,
     provider: CompletionProvider | None = None,
+    project: str | None = None,
 ) -> AppContext:
-    """Construct Engine and RunStore; provider defaults to LiteLLM on models.json.
+    """Construct Engine, RunStore, and artifact store; provider defaults to LiteLLM.
 
     Args:
         config: Resolved run configuration; None means defaults anchored at
             the working directory (used by resume/status, which outlive any
             single config file).
         provider: Completion override for tests; None builds the real one.
+        project: Project name for content-addressed artifacts; None or empty
+            means declared artifacts are dropped (resume/status never write).
     """
     settings = config.run if config is not None else RunSettings()
     store = RunStore(NGEN_WEAVE_DIR / "runs")
+    artifacts = ArtifactStore(NGEN_WEAVE_DIR / "projects", project) if project else None
     if provider is None:
         models_file = config.models_file if config is not None else Path("models.json")
         provider = LazyProvider(models_file)
@@ -122,5 +128,6 @@ def _build_engine(
         db_path=settings.db_path,
         max_retries=settings.max_retries,
         retry_backoff_ms=settings.retry_backoff_ms,
+        artifacts=artifacts,
     )
-    return AppContext(engine=engine, store=store)
+    return AppContext(engine=engine, store=store, artifacts=artifacts)

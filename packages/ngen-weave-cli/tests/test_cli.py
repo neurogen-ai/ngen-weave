@@ -37,6 +37,7 @@ FIXTURE_SOURCE = textwrap.dedent(
         human_description = "echoes its input"
         input_type = EchoIn
         output_type = EchoOut
+        artifacts = ("echoed",)
 
         async def run(self, input, ctx):
             return EchoOut(echoed=input.text)
@@ -130,6 +131,57 @@ def test_run_completes_and_writes_run_file(workflow_module, fake_provider, tmp_p
     runs = store.list()
     assert len(runs) == 1
     assert runs[0].output == {"echoed": "hi"}
+
+
+def test_run_persists_declared_artifact_under_project(workflow_module, fake_provider, tmp_path):
+    import hashlib
+    import json as jsonlib
+
+    config = _write(tmp_path, "ngw.yaml", CONFIG_YAML)
+    input_file = _write(tmp_path, "input.json", INPUT_JSON)
+    result = runner.invoke(
+        app,
+        ["run", "cli_fixture_workflows.Echo", "-i", input_file, "-c", config, "--project", "demo"],
+    )
+    assert result.exit_code == 0, result.output
+    projects = tmp_path / ".ngen-weave" / "projects" / "demo"
+    blobs = [
+        p
+        for p in projects.iterdir()
+        if not p.name.endswith(".json") and not p.name.endswith(".tmp")
+    ]
+    assert len(blobs) == 1
+    expected_hash = hashlib.sha256(jsonlib.dumps("hi", sort_keys=True).encode()).hexdigest()
+    assert blobs[0].name == expected_hash
+    assert blobs[0].read_text() == '"hi"'
+    sidecar = jsonlib.loads((projects / f"{expected_hash}.json").read_text())
+    assert sidecar["name"] == "echoed"
+    assert sidecar["sha256"] == expected_hash
+    assert sidecar["run_id"]
+    assert sidecar["node_path"] == "cli_fixture_workflows.Echo"
+    assert set(sidecar["input_hashes"]) == {"text"}
+
+    run_id = sidecar["run_id"]
+    run_file = RunStore(tmp_path / ".ngen-weave" / "runs").load(run_id)
+    writes = [r for r in run_file.records if r.kind == "artifact_write"]
+    # The root workflow and its single leaf both declare artifacts, so both
+    # scopes emit one artifact_write each.
+    assert len(writes) == 2
+    assert {w.node_path for w in writes} == {
+        "cli_fixture_workflows.Echo",
+        "cli_fixture_workflows.Echo.cli_fixture_workflows.Echo",
+    }
+    assert all(w.payload["artifact_sha256"] == expected_hash for w in writes)
+
+
+def test_run_without_project_drops_artifacts(workflow_module, fake_provider, tmp_path):
+    config = _write(tmp_path, "ngw.yaml", CONFIG_YAML)
+    input_file = _write(tmp_path, "input.json", INPUT_JSON)
+    result = runner.invoke(
+        app, ["run", "cli_fixture_workflows.Echo", "-i", input_file, "-c", config]
+    )
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / ".ngen-weave" / "projects").exists()
 
 
 def test_run_requires_input(workflow_module, fake_provider, tmp_path):
