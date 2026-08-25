@@ -4,7 +4,7 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B", "SIM", "C90"]
 
 [lint.mccabe]
-max-complexity = 20
+max-complexity = 10
 
 [lint.per-file-ignores]
 # typer's API puts function calls in parameter defaults by design
