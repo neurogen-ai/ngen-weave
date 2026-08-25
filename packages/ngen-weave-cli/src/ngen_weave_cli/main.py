@@ -109,7 +109,7 @@ def run_command(
             _fail(ConfigError("no input given; pass -i input.json"))
         raw = _read_json(input_file)
         model = wf.input_type.model_validate(raw)
-        app_ctx = _build_engine(config)
+        app_ctx = _build_engine(config, project=project)
         result = asyncio.run(app_ctx.engine.run(wf, model, models=models))
     except NgWeaveError as exc:
         _fail(exc)
