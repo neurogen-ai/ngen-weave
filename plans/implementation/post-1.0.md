@@ -143,18 +143,22 @@ Commit: `docs(design): distribution mapping and runtime contract`
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+
 @dataclass(frozen=True)
 class CompiledArtifact:
-    target: str                      # e.g. "argo"
-    name: str                        # sanitized workflow name
-    files: dict[str, str]            # relative path -> text content
-    entrypoint: str                  # primary file path inside files
-    metadata: dict[str, Any]         # target-defined extras (never read by core)
+    target: str  # e.g. "argo"
+    name: str  # sanitized workflow name
+    files: dict[str, str]  # relative path -> text content
+    entrypoint: str  # primary file path inside files
+    metadata: dict[str, Any]  # target-defined extras (never read by core)
+
 
 class CompileTarget(Protocol):
     name: str
+
     def compile(self, definition: dict, *, name: str) -> CompiledArtifact:
         """definition is the serialized workflow definition as stored by DefinitionStore."""
+
 
 class CompileError(Exception):
     """Unsupported node kind, unmappable structure, or malformed definition."""
@@ -165,16 +169,19 @@ class CompileError(Exception):
 from dataclasses import dataclass
 from typing import Callable
 
+
 @dataclass(frozen=True)
 class RenderedNode:
-    templates: list[dict]     # raw target-native template fragments
-    dependencies: list[str]   # upstream node paths this node waits on
-    condition: str | None     # edge condition inherited from a control parent, if any
+    templates: list[dict]  # raw target-native template fragments
+    dependencies: list[str]  # upstream node paths this node waits on
+    condition: str | None  # edge condition inherited from a control parent, if any
+
 
 NodeRenderer = Callable[[dict], RenderedNode]
 # dict argument: the node's serialized definition subtree. Raises CompileError on anything unmappable.
 
-RENDERERS: dict[str, NodeRenderer] = {}   # key: node kind string, matching NODE_KINDS keys
+RENDERERS: dict[str, NodeRenderer] = {}  # key: node kind string, matching NODE_KINDS keys
+
 
 def register_renderer(kind: str, renderer: NodeRenderer) -> None:
     if kind in RENDERERS:
@@ -229,24 +236,29 @@ Commit: `feat(compile): argo target with container/suspend/conditional-dag rende
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+
 @dataclass(frozen=True)
 class Activation:
     run_id: str
-    node_path: str                 # dotted path, matches provenance node_path
+    node_path: str  # dotted path, matches provenance node_path
     definition_hash: str
-    input: dict                    # validated input dump
-    budget_ctx: dict               # parent budget snapshot for attribution
+    input: dict  # validated input dump
+    budget_ctx: dict  # parent budget snapshot for attribution
+
 
 @dataclass(frozen=True)
 class DispatchTicket:
-    backend: str                   # "local" | "argo" | ...
-    handle: str                    # backend-local id (pid, pod name, ...)
-    location: str | None           # human-readable locator for provenance
+    backend: str  # "local" | "argo" | ...
+    handle: str  # backend-local id (pid, pod name, ...)
+    location: str | None  # human-readable locator for provenance
+
 
 class DispatchBackend(Protocol):
     name: str
+
     async def dispatch(self, activation: Activation) -> DispatchTicket: ...
     async def cancel(self, ticket: DispatchTicket) -> None: ...
+
 
 class LocalDispatch:
     """In-process execution, today's behavior, the permanent default."""
@@ -336,10 +348,13 @@ Core (`workspaces.py`):
 ```python
 @dataclass(frozen=True)
 class WorkspaceScope:
-    workspace: str | None          # None preserves plain-project behavior everywhere
+    workspace: str | None  # None preserves plain-project behavior everywhere
     # role resolution: project role wins, else workspace member role, else none
 
-async def resolve_workspace_role(store: WorkspaceRepo, principal: Principal, project_scope: ProjectScope) -> str | None: ...
+
+async def resolve_workspace_role(
+    store: WorkspaceRepo, principal: Principal, project_scope: ProjectScope
+) -> str | None: ...
 ```
 
 `WorkspaceRepo` protocol (`list`, `members`, `add_member`, `set_project_workspace`, all `async`) implemented for Postgres in this step; SQLite gets table parity via the migration test's `create_all` path so unit tests run storeless as usual.
@@ -397,22 +412,25 @@ Contract:
 class SessionMember:
     user: str
     joined_at: str
-    last_seen: str                 # heartbeat, seconds resolution
+    last_seen: str  # heartbeat, seconds resolution
+
 
 @dataclass
 class ReviewSession:
     artifact_id: str
     members: list[SessionMember]
-    draft_slots: dict[str, dict[str, str]]   # slot_name -> user -> latest draft value
+    draft_slots: dict[str, dict[str, str]]  # slot_name -> user -> latest draft value
+
 
 def apply_submission(session: ReviewSession, user: str, slots: dict[str, str]) -> ReviewSession:
     """Merge one user's submitted slots. Last-write-wins per slot per user;
     distinct users writing the same slot keep both, surfaced as a conflict list."""
 
+
 @dataclass(frozen=True)
 class MergeResult:
-    merged: dict[str, str]         # final artifact response payload candidates
-    conflicts: list[str]           # slot names claimed by >1 user
+    merged: dict[str, str]  # final artifact response payload candidates
+    conflicts: list[str]  # slot names claimed by >1 user
 ```
 
 Rules, fixed here:
@@ -598,7 +616,7 @@ Commits: `chore: v1.3 changelog and version bumps`, `docs: nav and index updates
 5. **Plugin surface** (v0.5 Steps 2–4): if the conformance harness (Step 14) finds router-mounting or renderer-registration gaps, fixes land as `fix(core)` commits in Step 14 and are recorded here; no speculative widening before evidence.
 6. **Entry-point groups** (v0.5 pattern): two new groups, `ngen-weave.compile-targets` and `ngen-weave.dispatch-backends`, loaded by the same machinery (Steps 2, 4).
 7. **No semantic changes** to validation, provenance emission, artifact addressing, budget enforcement, or the auth matrix anywhere in this plan. If a step appears to require one, stop: the abstraction list above exists so variation lands at the edges.
-8. **Repo hygiene** (Step 17): a small lint check asserting every source file's module docstring exists and stays under 20 lines (../README.md conventions) lands here, once the codebase is large enough to calibrate the rule against; before then it holds by review only.
+8. **Repo hygiene** (Step 17): a small lint check asserting every source file's module docstring stays within two lines (../README.md conventions) lands here, once the codebase is large enough to calibrate the rule against; before then it holds by review only.
 
 ## Definition of done
 

@@ -1,0 +1,212 @@
+/* pytest-html theme override.
+   Loaded via `pytest --html ... --css scripts/util/report.css`; appended after
+   the built-in sheet, so equal-specificity rules here win. */
+
+:root {
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --ink: #1c2733;
+  --ink-soft: #5b6b7b;
+  --line: #e2e6ea;
+  --accent: #4653d0;
+  --green: #1a7f37;
+  --green-bg: #dafbe1;
+  --red: #c0392b;
+  --red-bg: #ffe0dd;
+  --amber: #9a6700;
+  --amber-bg: #fff3d6;
+  --gray-bg: #eceef1;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+  max-width: 72rem;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1 {
+  font-size: 1.45rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+body > p {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  margin-top: -0.35rem;
+}
+body > p a { color: var(--accent); text-decoration: none; }
+body > p a:hover { text-decoration: underline; }
+
+/* ---- summary cards -------------------------------------------------- */
+div.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.9rem 1.1rem;
+  margin: 1.25rem 0;
+  box-shadow: 0 1px 2px rgb(16 24 40 / 0.04);
+}
+
+.summary__data b,
+.summary__data span { color: var(--ink-soft); font-size: 0.88rem; }
+
+/* ---- filters / controls --------------------------------------------- */
+div.controls, div.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.filters input[type="text"], .filters input:not([type]) {
+  flex: 1 1 18rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  font: inherit;
+  color: var(--ink);
+}
+.filters input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(70 83 208 / 0.15);
+}
+
+button, .filter {
+  padding: 0.42rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+button:hover, .filter:hover { background: var(--gray-bg); }
+
+/* ---- results table --------------------------------------------------- */
+table#results-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgb(16 24 40 / 0.04);
+}
+
+#results-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #fafbfc;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: left;
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+#results-table th.sortable:hover { color: var(--accent); cursor: pointer; }
+
+#results-table td {
+  padding: 0.5rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+#results-table tbody tr:last-child td { border-bottom: none; }
+
+td.col-testId {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  word-break: break-all;
+}
+
+td.col-duration {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* per-file group header rows */
+tr.collapsible td {
+  background: #fafbfc;
+  font-weight: 600;
+  font-size: 0.86rem;
+}
+tr.collapsible:hover td { background: var(--gray-bg); cursor: pointer; }
+
+/* ---- result badges ---------------------------------------------------- */
+td.col-result { white-space: nowrap; }
+td.col-result::before {
+  content: "";
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  margin-right: 0.45rem;
+  vertical-align: 1px;
+  background: var(--gray-bg);
+}
+
+tr.passed  td.col-result, tr.xpassed  td.col-result { color: var(--green); }
+tr.failed  td.col-result, tr.error    td.col-result { color: var(--red);   }
+tr.skipped td.col-result, tr.rerun    td.col-result { color: var(--amber); }
+tr.xfailed td.col-result                            { color: var(--ink-soft); }
+
+tr.passed  > .collapsible td.col-result::before,
+tr.xpassed > .collapsible td.col-result::before { background: var(--green); }
+tr.failed  > .collapsible td.col-result::before,
+tr.error   > .collapsible td.col-result::before { background: var(--red);   }
+tr.skipped > .collapsible td.col-result::before,
+tr.rerun   > .collapsible td.col-result::before { background: var(--amber); }
+tr.xfailed > .collapsible td.col-result::before { background: var(--ink-soft); }
+
+/* collapsed rows show one summary line per test; tint them faintly */
+tbody.results-table-row { border-left: 3px solid transparent; }
+tbody.results-table-row[class~="passed"]  { border-left-color: var(--green-bg); }
+tbody.results-table-row[class~="failed"]  { border-left-color: var(--red-bg); }
+
+/* ---- logs / extras ----------------------------------------------------- */
+.logwrapper { margin: 0; }
+.log {
+  background: #10161d;
+  color: #d6deeb;
+  font: 12.5px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.logexpander { color: var(--accent); cursor: pointer; user-select: none; }
+
+.extra { padding-top: 0.5rem !important; }
+
+/* ---- environment table -------------------------------------------------- */
+#environment-header h2 {
+  font-size: 1.05rem;
+  font-weight: 650;
+  margin: 1.5rem 0 0.5rem;
+}
+#environment td {
+  padding: 0.3rem 1rem 0.3rem 0;
+  font-size: 0.86rem;
+  color: var(--ink-soft);
+}
