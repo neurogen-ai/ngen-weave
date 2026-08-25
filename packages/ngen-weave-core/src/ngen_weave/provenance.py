@@ -1,20 +1,4 @@
-"""Provenance records and run metadata.
-
-ProvenanceRecord is the versioned envelope for every event ngen-weave emits:
-node activations, model calls, artifact writes (v0.2 widens Kind further).
-Each record is addressable by (run_id, node_path); node_path segments are
-workflow class paths joined by dots, deliberately unambiguous across plugins.
-RunMetadata is the frozen six-field summary the engine computes per scope and
-emits inside that scope's node_activation payload.
-
-Classes:
-    ProvenanceRecord: Frozen, versioned envelope for one provenance event.
-    RunMetadata: Frozen six-field summary of a scope's activity, engine-computed.
-    join_path: Join workflow class-path segments into a node_path string.
-
-Functions:
-    join_path: Join segments with "." into an unambiguous node path.
-"""
+"""Provenance records and run metadata."""
 
 from dataclasses import dataclass, field
 from typing import Literal

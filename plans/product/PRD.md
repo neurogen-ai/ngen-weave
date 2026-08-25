@@ -48,11 +48,12 @@ The `Workflow` class is the only abstraction that matters. Everything else speci
 
 ```python
 class CodeReview(Workflow):
-    input_type = ReviewInput        # pydantic model
+    input_type = ReviewInput  # pydantic model
     output_type = ReviewOutput
 
     def build(self, g):
-        g.add_node(self.draft); g.add_node(self.gate)   # composites declare structure
+        g.add_node(self.draft)
+        g.add_node(self.gate)  # composites declare structure
 ```
 
 Rules:
@@ -126,7 +127,7 @@ Kept here because these questions were expensive to settle and will be expensive
 - AgentNode waits for its harness. An earlier plan declared the node in v0.1 with a mocked executor as a "seam"; rejected: a mock of executor behavior nothing has exercised proves nothing, and v0.2 replaced it wholesale anyway. The node ships where it is driven by a real model loop (v0.2), boxed for real in v0.5.
 - Config and definition format validity is promised from 1.0 onward only. An earlier "everything valid stays valid forever" commitment dated from v0.1; rejected as a promise made before first contact with users. Pre-1.0 the format may be reshaped with migration notes while usage is small; at 1.0 the widening-not-breaking rule becomes binding.
 - One CLI name (`ngen-weave`). A short alias was planned as a second console script from v0.1; dropped: aliases are cheapest to add when someone actually complains, and until then they double every naming decision in docs and tests. The `ngw` prefix survives only in machine namespaces that predate this decision (`ngw.yaml` config files, `X-Ngw-*` headers, `ngw:` PROV identifiers).
-- Every source file opens with a module docstring (≤20 lines): one sentence on what the module achieves, then one entry per public class/function giving name plus what it achieves. It is a navigation aid so agents and humans can query the top of a file instead of reading it whole, not documentation — no rationale, history, usage examples, or signatures beyond names, and it must never grow into a parallel spec (that way staleness lies). Accuracy is maintained in the same commit as the change that invalidates it.
+- Documentation lives under defs, not at the top of files. Every public class/function carries a docstring saying what it achieves; a module header is at most two lines naming the module's job, never an index of its contents. It is documentation where you read it, not a navigation aid to query the top of a file instead — no rationale, history, usage examples, or signatures beyond names, and it must never grow into a parallel spec (that way staleness lies). Accuracy is maintained in the same commit as the change that invalidates it.
 - Collaboration features (simultaneous editing, team workspaces) start post-1.0. Roles arrive with auth at v0.8; the database lands alone at v0.6 so the storage migration is never entangled with identity work. Auth itself is delegated to WorkOS (AuthKit-hosted login, SDK token verification): ngen-weave keeps only local role rows and a `Principal` boundary, and never builds user management, password handling, or session machinery.
 
 ## What would make this fail
