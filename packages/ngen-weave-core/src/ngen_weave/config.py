@@ -1,17 +1,6 @@
-"""Run configuration: YAML/JSON files resolving to executable run settings.
+"""Run configuration: YAML/JSON files resolving to ResolvedConfig.
 
-A config file names one registered workflow by class path and assigns data
-only: parameters, model bindings, and run settings. Structure stays in code;
-this layer never accepts code-bearing members. JSON parses identically to
-YAML (dialect chosen by file extension), so either extension loads the same
-ResolvedConfig.
-
-Classes:
-    RunSettings: Checkpointer choice, database path, and retry policy knobs.
-    ResolvedConfig: Everything Engine construction needs, fully validated.
-
-Functions:
-    load_config: Parse and validate a config file against a discovery map.
+Data only; structure stays in code and this layer accepts no code-bearing members.
 """
 
 from __future__ import annotations

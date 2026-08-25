@@ -1,12 +1,6 @@
-"""Model variants as data: models.json loading and the LiteLLM adapter.
+"""Model variants loaded from project-root models.json.
 
-Variants are named entries in project-root models.json; runs pick a variant
-through config model bindings or defaultVariant. LiteLLMProvider is the only
-module in the codebase importing litellm; adapters translate, never extend.
-
-Classes:
-    ModelRegistry: Loads models.json and resolves variant call kwargs.
-    LiteLLMProvider: CompletionProvider backed by litellm.acompletion.
+LiteLLMProvider is the only module importing litellm; adapters translate, never extend.
 """
 
 from __future__ import annotations

@@ -1,11 +1,6 @@
-"""Completion boundary: the protocol every model backend implements.
+"""Completion boundary between ngweave and model SDKs.
 
-Backends translate their native replies into Completion and raise the
-ngweave error taxonomy; nothing outside this package talks to a model SDK.
-
-Classes:
-    Completion: One model reply with token and cost accounting attached.
-    CompletionProvider: Protocol for backends producing Completions.
+Backends translate native replies into Completion and raise the ngweave error taxonomy.
 """
 
 from __future__ import annotations
