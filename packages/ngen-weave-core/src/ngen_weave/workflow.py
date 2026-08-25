@@ -142,13 +142,6 @@ class Human(Workflow):
         raise NotImplementedError
 
 
-class AgentNode(Workflow):
-    """Declared seam for agent execution; v0.1 runs only a mocked executor."""
-
-    def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
-        raise NotImplementedError
-
-
 class GraphBuilder(Protocol):
     """Narrow protocol build() receives; delegates to an ordinary LangGraph StateGraph."""
 
