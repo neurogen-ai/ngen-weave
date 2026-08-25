@@ -354,3 +354,36 @@ async def test_interrupt_at_depth_two_resumes(tmp_path):
         assert expected in ok_paths
     writes = [r for r in rf.records if r.kind == "artifact_write"]
     assert len(writes) == 1
+
+
+async def test_interrupt_at_depth_two_resumes_sqlite(tmp_path):
+    """Depth-2 interrupt resume on the durable sqlite checkpointer.
+
+    Mirrors test_interrupt_at_depth_two_resumes on sqlite: nested graphs get
+    thread ids derived from the run id and their checkpoint namespace, so the
+    child's checkpoints cannot interleave with the root's in one chain and a
+    durable resume replays against the right graph state.
+    """
+    inner, h, _fin = _make_review_inner()
+    outer = make_chain("ReviewOuterLite", [inner], Piece, Final)
+    engine = Engine(
+        FakeProvider(['{"text":"deep-done"}']),
+        RunStore(tmp_path / "runs"),
+        checkpointer="sqlite",
+        db_path=tmp_path / "cp.db",
+    )
+
+    waiting = await engine.run(outer, Piece(text="go"))
+    assert waiting.status == "waiting_human"
+
+    # Fresh-engine resume against the same sqlite database, as the CLI does.
+    healed = Engine(
+        FakeProvider(['{"text":"deep-done"}']),
+        RunStore(tmp_path / "runs"),
+        checkpointer="sqlite",
+        db_path=tmp_path / "cp.db",
+    )
+    result = await healed.resume(waiting.run_id, payload={"verdict": "approve", "notes": ""})
+
+    assert result.status == "completed"
+    assert result.output == Final(text="deep-done")
