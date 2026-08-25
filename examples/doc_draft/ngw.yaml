@@ -1,0 +1,8 @@
+workflow: doc_draft.workflows.DocDraft
+params: {}
+models:
+  # Bind the quality-gate leaf to the cheap variant by its fully-qualified
+  # class path; every other model-calling leaf falls through to the default.
+  doc_draft.workflows.QualityGate: haiku
+run:
+  checkpointer: memory
