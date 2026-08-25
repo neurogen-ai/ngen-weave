@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import operator
 import time
 from asyncio import sleep as _sleep  # engine-owned alias; tests patch this
 from collections.abc import Callable
@@ -45,11 +46,13 @@ from ngen_weave.workflow import (
     workflow_class_path,
 )
 
-# Reserved state keys: the seeded run input, and which real node wrote last
+# Reserved state keys: the seeded run input, which real node wrote last
 # (used to deliver input to conditional-dispatch targets, whose effective
-# parent is the dispatching node itself).
+# parent is the dispatching node itself), and the usage tuples every node
+# reports per activation (accumulated so composites read their subtree total).
 _INPUT_KEY = "__ngen_input__"
 _LAST_KEY = "__ngen_last__"
+_USAGE_KEY = "__ngen_usage__"
 
 Usage = tuple[int, int, float]  # tokens_in_context, tokens_total, cost_usd
 
@@ -129,9 +132,7 @@ def parse_output(output_type: type[BaseModel], text: str, node_path: str) -> Bas
 def _single_list_field(input_model: type[BaseModel]) -> str | None:
     """The one list field of an input model, for collected fan-in."""
     names = [
-        name
-        for name, fi in input_model.model_fields.items()
-        if get_origin(fi.annotation) is list
+        name for name, fi in input_model.model_fields.items() if get_origin(fi.annotation) is list
     ]
     return names[0] if len(names) == 1 else None
 
@@ -298,21 +299,51 @@ class Engine:
         self.max_retries = max_retries
         self.retry_backoff_ms = retry_backoff_ms
         self._compiled: dict[tuple, CompiledGraph] = {}
+        self._compiling: set[int] = set()  # ids of classes mid-compilation
         self._memory: Any = None  # shared MemorySaver, created lazily
 
     # --- compilation ---------------------------------------------------------
 
-    def compile(self, wf: type[Workflow], models: dict | None = None) -> CompiledGraph:
-        """Compile wf into a runnable graph, cached per (class, bindings).
+    def compile(
+        self, wf: type[Workflow], models: dict | None = None, outer_scopes: tuple = ()
+    ) -> CompiledGraph:
+        """Compile wf into a runnable graph, cached per (class, bindings, scopes).
 
         build() runs once against the recording adapter; the recorded ops are
         replayed onto the production StateGraph. Model-calling leaves resolve
         their variant before any run starts: exact class-path binding beats
-        innermost enclosing composite beats the provider's default variant.
-        The resolution freezes into the compiled graph, so resumed runs
-        resolve identically and provenance records the variant actually used.
+        innermost enclosing composite beats the provider's default variant;
+        outer_scopes carries the enclosing composites crossed to reach wf, so
+        bindings keyed above wf still govern its leaves. Composite children
+        compile eagerly here, so a binding anywhere takes effect before any
+        run starts and cyclic composite wiring fails at compile time. The
+        resolution freezes into the compiled graph, so resumed runs resolve
+        identically and provenance records the variant actually used.
         """
         models = models or {}
+        root_path = workflow_class_path(wf)
+        key = (
+            root_path,
+            tuple(sorted(models.items())),
+            tuple(workflow_class_path(s) for s in outer_scopes),
+        )
+        cached = self._compiled.get(key)
+        if cached is not None:
+            return cached
+        if id(wf) in self._compiling:
+            raise ConfigError(
+                f"cyclic composite wiring through {root_path}; "
+                "a workflow cannot wire itself into its own subtree"
+            )
+        self._compiling.add(id(wf))
+        try:
+            return self._compile_uncached(wf, models, outer_scopes, key)
+        finally:
+            self._compiling.discard(id(wf))
+
+    def _compile_uncached(
+        self, wf: type[Workflow], models: dict, outer_scopes: tuple, key: tuple
+    ) -> CompiledGraph:
         root_path = workflow_class_path(wf)
         key = (root_path, tuple(sorted(models.items())))
         cached = self._compiled.get(key)
@@ -332,16 +363,27 @@ class Engine:
         incoming, dispatched = _incoming(wiring)
         plan = _assembly_plan(wiring, incoming, dispatched)
         default_variant = getattr(self.provider, "default_variant", None) or "default"
+        scopes = (wf, *outer_scopes)  # innermost first for resolve_model_variant
+        # Full class-path chain from the run root down to wf; every activation
+        # inside this graph prefixes its path with it.
+        base = ".".join(workflow_class_path(c) for c in reversed(scopes))
         variants = {
-            path: resolve_model_variant(cls, [wf], models, default_variant)
+            path: resolve_model_variant(cls, scopes, models, default_variant)
             for path, cls in wiring.nodes.items()
             if issubclass(cls, (Worker, Control))
+        }
+        children = {
+            path: self.compile(cls, models, outer_scopes=scopes)
+            for path, cls in wiring.nodes.items()
+            if cls.run is Workflow.run  # composites recurse; every leaf overrides run
         }
         cell = {
             "plan": plan,
             "variants": variants,
             "root_path": root_path,
+            "base": base,
             "instances": {path: _instantiate(cls) for path, cls in wiring.nodes.items()},
+            "children": children,
         }
 
         builder = self._build_production_graph(wiring, recorder.ops, cell)
@@ -367,6 +409,7 @@ class Engine:
             return new
 
         fields[_LAST_KEY] = Annotated[str, _last_wins]
+        fields[_USAGE_KEY] = Annotated[list, operator.add]
         schema = TypedDict("EngineState", fields, total=False)  # type: ignore[call-overload]
         builder = StateGraph(schema)
 
@@ -429,7 +472,7 @@ class Engine:
 
         async def fn(state: dict, config: RunnableConfig) -> dict:
             run_id = config["configurable"]["thread_id"]
-            node_path = join_path(cell["root_path"], path)
+            node_path = join_path(cell["base"], path)
             emit = self._emitter(run_id, node_path)
             started = time.perf_counter()
             usage: list[Usage] = []
@@ -445,17 +488,27 @@ class Engine:
 
             ctx = RunContext(run_id=run_id, node_path=node_path, emit=emit, provider=self.provider)
             try:
-                attempt = 0
-                while True:
-                    attempt += 1
-                    try:
-                        output = await self._execute_leaf(cls, path, model, ctx, usage, cell)
-                        break
-                    except InfraError:
-                        if attempt > self.max_retries:
-                            raise
-                        emit("node_activation", {"status": "retry", "attempt": attempt})
-                        await _sleep(self.retry_backoff_ms * 2 ** (attempt - 1) / 1000)
+                if cls.run is Workflow.run:
+                    # Composite: the child graph runs to completion and its
+                    # subtree's usage lands in `usage`, so this node's single
+                    # ok record attributes the whole scope. Failures propagate
+                    # untouched; leaves inside already applied retry policy.
+                    attempt = 1
+                    output = await self._activate_composite(
+                        cls, path, model, ctx, usage, cell, config
+                    )
+                else:
+                    attempt = 0
+                    while True:
+                        attempt += 1
+                        try:
+                            output = await self._execute_leaf(cls, path, model, ctx, usage, cell)
+                            break
+                        except InfraError:
+                            if attempt > self.max_retries:
+                                raise
+                            emit("node_activation", {"status": "retry", "attempt": attempt})
+                            await _sleep(self.retry_backoff_ms * 2 ** (attempt - 1) / 1000)
             except DataError:
                 emit("node_activation", {"status": "invalid"})
                 raise
@@ -469,9 +522,48 @@ class Engine:
                 last_output_valid=True,
             )
             emit("node_activation", {"status": "ok", "metadata": dataclasses.asdict(metadata)})
-            return {path: output.model_dump(), _LAST_KEY: path}
+            return {path: output.model_dump(), _LAST_KEY: path, _USAGE_KEY: usage}
 
         return fn
+
+    async def _activate_composite(
+        self,
+        cls: type[Workflow],
+        path: str,
+        model: BaseModel,
+        ctx: RunContext,
+        usage: list[Usage],
+        cell: dict[str, Any],
+        config: RunnableConfig,
+    ) -> BaseModel:
+        """Run one composite child's compiled graph to completion.
+
+        The child activates under its own checkpoint namespace keyed by its
+        accumulated node path. Its nodes report usage tuples through the
+        child graph's accumulated state channel, which lands here as the
+        subtree total and folds into the caller's list, so the parent's
+        per-scope metadata sums the child's own records plus all descendants'.
+        The child's terminal dump validates against the composite's
+        output_type before it travels over the parent edge.
+        """
+        compiled = cell["children"][path]
+        attempt_ns = f"attempt-{config['configurable'].get('run_attempt', 1)}"
+        final = await self._invoke(
+            compiled,
+            {_INPUT_KEY: model.model_dump()},
+            ctx.run_id,
+            checkpoint_ns=f"{attempt_ns}:{ctx.node_path}",
+        )
+        usage.extend(final.get(_USAGE_KEY, ()))
+        output_dump = _select_output(path, final)
+        try:
+            validated = cls.output_type.model_validate(output_dump)
+        except ValidationError as exc:
+            raise DataError(
+                f"{ctx.node_path}: composite output does not match "
+                f"{cls.output_type.__name__}: {exc}"
+            ) from None
+        return validated
 
     async def _execute_leaf(
         self,
@@ -584,21 +676,51 @@ class Engine:
         cls = registry_get(run_file.workflow)
         cached = next((c for c in self._compiled.values() if c.root is cls), None)
         compiled = cached if cached is not None else self.compile(cls)
-        return await self._drive(compiled, None, run_id)
+        # No interrupts exist yet, so a stopped run re-executes from the top
+        # under a fresh checkpoint namespace, seeded with its stored input.
+        return await self._drive(compiled, {_INPUT_KEY: run_file.input}, run_id)
 
     async def _drive(self, compiled: CompiledGraph, seed: dict | None, run_id: str) -> RunResult:
-        """Invoke the graph, then write the terminal transition to the run file."""
+        """Invoke the graph, then write the terminal transition to the run file.
+
+        A completed run also emits the root scope's node_activation record on
+        the root class path, so every level of nesting carries per-scope
+        RunMetadata: composites report from their own node functions, the root
+        reports here once its whole subtree succeeded.
+        """
         status: RunStatus = "failed"
         error: dict[str, str] | None = None
         output_dump: dict | None = None
+        sink: list[Usage] = []
+        started = time.perf_counter()
+        # Each drive gets a fresh checkpoint namespace: LangGraph does not
+        # reschedule a node that raised, so replaying the old namespace would
+        # end immediately. A failed run re-executes from the top instead.
+        run_file = self.store.load(run_id)
+        run_file.attempts += 1
+        self.store.save(run_file)
+        attempt_ns = f"attempt-{run_file.attempts}"
         try:
-            final = await self._invoke(compiled, seed, run_id)
+            final = await self._invoke(compiled, seed, run_id, checkpoint_ns=attempt_ns)
             output_dump = _select_output(workflow_class_path(compiled.root), final)
             compiled.root.output_type.model_validate(output_dump)
             status = "completed"
+            sink.extend(final.get(_USAGE_KEY, ()))
         except Exception as exc:
             error = {"type": type(exc).__name__, "message": str(exc)}
-        run_file = self.store.load(run_id)
+        if status == "completed":
+            metadata = RunMetadata(
+                iterations=1,
+                tokens_in_context=sum(u[0] for u in sink),
+                tokens_total=sum(u[1] for u in sink),
+                cost_usd=sum(u[2] for u in sink),
+                elapsed_ms=int((time.perf_counter() - started) * 1000),
+                last_output_valid=True,
+            )
+            self._emitter(run_id, workflow_class_path(compiled.root))(
+                "node_activation", {"status": "ok", "metadata": dataclasses.asdict(metadata)}
+            )
+        run_file = self.store.load(run_id)  # reload: nodes appended records meanwhile
         run_file.status = status
         run_file.error = error
         run_file.output = output_dump
@@ -609,9 +731,30 @@ class Engine:
             run_id, status, compiled.root.output_type.model_validate(output_dump), None
         )
 
-    async def _invoke(self, compiled: CompiledGraph, seed: dict | None, run_id: str) -> dict:
-        """Invoke the builder's graph under the run's checkpoint thread."""
-        config = {"configurable": {"thread_id": run_id}}
+    async def _invoke(
+        self,
+        compiled: CompiledGraph,
+        seed: dict | None,
+        run_id: str,
+        *,
+        checkpoint_ns: str = "",
+    ) -> dict:
+        """Invoke the builder's graph under the run's checkpoint thread.
+
+        checkpoint_ns isolates drive attempts and nested activations under
+        the same run id; the root graph of the first attempt uses the empty
+        namespace's attempt prefix set by _drive. Usage totals travel back
+        through the graph's accumulated state channel, never through config.
+        """
+        config = {
+            "configurable": {
+                "thread_id": run_id,
+                "checkpoint_ns": checkpoint_ns,
+                "run_attempt": int(checkpoint_ns.split(":")[0].split("-")[1])
+                if checkpoint_ns
+                else 1,
+            }
+        }
         if self.checkpointer == "memory":
             if self._memory is None:
                 from langgraph.checkpoint.memory import MemorySaver

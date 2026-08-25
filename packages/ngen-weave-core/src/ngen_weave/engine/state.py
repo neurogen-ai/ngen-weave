@@ -27,6 +27,9 @@ class RunFile:
         input: The root workflow's input dump.
         output: Output dump once completed, else None.
         error: {"type", "message"} when failed, else None.
+        attempts: How many times the engine has driven this run; each attempt
+            gets its own checkpoint namespace so a failed run re-executes
+            from the top instead of replaying a dead superstep.
         records: Full provenance stream, oldest first.
     """
 
@@ -37,6 +40,7 @@ class RunFile:
     input: dict
     output: dict | None = None
     error: dict[str, str] | None = None  # {"type": str, "message": str}
+    attempts: int = 0
     records: list[ProvenanceRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,6 +53,7 @@ class RunFile:
             "input": self.input,
             "output": self.output,
             "error": self.error,
+            "attempts": self.attempts,
             "records": [dataclasses.asdict(record) for record in self.records],
         }
 
@@ -63,6 +68,7 @@ class RunFile:
             input=data["input"],
             output=data.get("output"),
             error=data.get("error"),
+            attempts=data.get("attempts", 0),
             records=[ProvenanceRecord(**record) for record in data.get("records", ())],
         )
 
