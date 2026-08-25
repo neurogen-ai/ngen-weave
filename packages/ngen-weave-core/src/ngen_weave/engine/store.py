@@ -1,13 +1,4 @@
-"""Single-writer persistence for run files.
-
-RunStore owns the .ngen-weave/runs/ directory: every read and write of run
-state goes through it, so later backends (SQLite at v0.2, Postgres at v0.6)
-swap in behind one class. Files are written atomically per transition and are
-always valid JSON, always sufficient to re-run.
-
-Classes:
-    RunStore: Create, load, save, append to, and list run files.
-"""
+"""Single-writer persistence for run files."""
 
 from __future__ import annotations
 

@@ -1,18 +1,4 @@
-"""LangGraph compilation and sequential execution.
-
-Engine.compile turns a workflow class into a runnable graph: build() runs
-once against the recording GraphBuilder adapter, and the recorded wiring is
-replayed onto a production StateGraph whose per-key channels hold each child's
-validated-output dump. Identity relays align parent depths so multi-parent
-fan-in targets fire exactly once, after every parent has written; sequential
-semantics stay deterministic at any shape. Node functions assemble each
-child's input per its declared fan-in form, validate at the boundary, execute
-leaves, and emit provenance unconditionally; authors write zero logging code.
-
-Classes:
-    CompiledGraph: A compiled workflow plus its frozen per-node variant table.
-    Engine: Compile, run, and resume workflows on LangGraph.
-"""
+"""LangGraph compilation and sequential execution."""
 
 from __future__ import annotations
 

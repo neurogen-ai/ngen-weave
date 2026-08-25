@@ -1,13 +1,4 @@
-"""Run file and result shapes.
-
-RunFile is the one JSON document per run under .ngen-weave/runs/: metadata
-plus the full event/provenance stream, always valid and sufficient to re-run.
-RunResult is what Engine.run/resume return to callers.
-
-Classes:
-    RunFile: Complete persisted state of one run, serialized by RunStore.
-    RunResult: Terminal or in-flight outcome of a run call.
-"""
+"""Run file and result shapes."""
 
 from __future__ import annotations
 
