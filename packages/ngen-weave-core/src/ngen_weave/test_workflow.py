@@ -158,8 +158,14 @@ def test_same_short_names_in_different_modules_coexist():
     b = type(
         "Shared",
         (Worker,),
-        {"__module__": "other.module", "__qualname__": "Shared", "input_type": In,
-         "output_type": Out, "prompt": "p", "run": run},
+        {
+            "__module__": "other.module",
+            "__qualname__": "Shared",
+            "input_type": In,
+            "output_type": Out,
+            "prompt": "p",
+            "run": run,
+        },
     )
     validate_structure(a)
     validate_structure(b)
@@ -190,8 +196,13 @@ def test_worker_without_prompt_fails():
     base = type(
         "NoPromptBase",
         (Worker,),
-        {"__module__": __name__, "__qualname__": "NoPromptBase",
-         "input_type": In, "output_type": Out, "_defer_validation": True},
+        {
+            "__module__": __name__,
+            "__qualname__": "NoPromptBase",
+            "input_type": In,
+            "output_type": Out,
+            "_defer_validation": True,
+        },
     )
 
     with pytest.raises(ConfigError, match="prompt"):
@@ -679,6 +690,38 @@ def test_slot_source_type_mismatch_fails():
 
     Composite = _fanin_composite(
         WrongMerge,
+        lambda g, left, right, synth: (
+            g.add_edge(right, synth, into="draft"),
+            g.add_edge(left, synth, into="critique"),
+        ),
+        defer=True,
+    )
+    with pytest.raises(ConfigError, match="does not fit"):
+        validate_structure(Composite)
+
+
+def test_union_slot_fan_in_passes():
+    class UnionMerge(BaseModel):
+        draft: DraftOut | CritiqueOut
+        critique: CritiqueOut
+
+    Composite = _fanin_composite(
+        UnionMerge,
+        lambda g, left, right, synth: (
+            g.add_edge(right, synth, into="draft"),
+            g.add_edge(left, synth, into="critique"),
+        ),
+    )
+    validate_structure(Composite)
+
+
+def test_scalar_slot_mismatch_fails():
+    class ScalarMerge(BaseModel):
+        draft: str  # no model output fits a str slot
+        critique: CritiqueOut
+
+    Composite = _fanin_composite(
+        ScalarMerge,
         lambda g, left, right, synth: (
             g.add_edge(right, synth, into="draft"),
             g.add_edge(left, synth, into="critique"),

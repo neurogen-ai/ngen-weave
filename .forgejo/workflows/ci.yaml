@@ -1,13 +1,47 @@
-on: [push, pull_request]
+name: CI
+
+on: [push]
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
+  check:
+    runs-on: docker
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Deps
+        run: scripts/ci/deps.sh
+
+      - name: Complexity check
+        if: always()
+        run: scripts/ci/complexity-check.sh
+
+      - name: Lint (ruff)
+        if: always()
+        run: scripts/ci/lint.sh
+
+      - name: Format check (ruff)
+        if: always()
+        run: scripts/util/format-check.sh
+
+      - name: Test (pytest)
+        if: always()
+        run: uv run pytest --junitxml=test-report.xml --html=report.html --self-contained-html --css=scripts/util/report.css
+
+      - name: Build packages
+        if: always()
+        run: scripts/ci/build.sh
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v3
         with:
-          python-version: "3.12"
-      - run: uv sync
-      - run: uv run ruff check .
-      - run: uv run pytest
+          name: test-reports
+          path: |
+            report.html
+            test-report.xml
+          if-no-files-found: ignore
