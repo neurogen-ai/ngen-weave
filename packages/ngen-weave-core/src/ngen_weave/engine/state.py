@@ -1,4 +1,17 @@
+<<<<<<< HEAD
 """Run file and result shapes."""
+=======
+"""Run file and result shapes.
+
+RunFile is the one JSON document per run under .ngen-weave/runs/: metadata
+plus the full event/provenance stream, always valid and sufficient to re-run.
+RunResult is what Engine.run/resume return to callers.
+
+Classes:
+    RunFile: Complete persisted state of one run, serialized by RunStore.
+    RunResult: Terminal or in-flight outcome of a run call.
+"""
+>>>>>>> feat/artifacts
 
 from __future__ import annotations
 
@@ -41,6 +54,10 @@ class RunFile:
     output: dict | None = None
     error: dict[str, str] | None = None  # {"type": str, "message": str}
     attempts: int = 0
+<<<<<<< HEAD
+=======
+    submissions: dict[str, dict] = field(default_factory=dict)
+>>>>>>> feat/artifacts
     records: list[ProvenanceRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -54,6 +71,10 @@ class RunFile:
             "output": self.output,
             "error": self.error,
             "attempts": self.attempts,
+<<<<<<< HEAD
+=======
+            "submissions": self.submissions,
+>>>>>>> feat/artifacts
             "records": [dataclasses.asdict(record) for record in self.records],
         }
 
@@ -69,6 +90,10 @@ class RunFile:
             output=data.get("output"),
             error=data.get("error"),
             attempts=data.get("attempts", 0),
+<<<<<<< HEAD
+=======
+            submissions=data.get("submissions", {}),
+>>>>>>> feat/artifacts
             records=[ProvenanceRecord(**record) for record in data.get("records", ())],
         )
 

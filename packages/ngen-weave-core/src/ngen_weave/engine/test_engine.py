@@ -7,6 +7,10 @@ test_nesting.py.
 """
 
 from pathlib import Path
+<<<<<<< HEAD
+=======
+from typing import Literal
+>>>>>>> feat/artifacts
 
 import pytest
 from pydantic import BaseModel, Field
@@ -18,11 +22,27 @@ from ngen_weave.engine import Engine
 from ngen_weave.engine.runner import _INPUT_KEY, _LAST_KEY  # noqa: F401
 from ngen_weave.engine.state import RUN_FILE_FORMAT, RunFile
 from ngen_weave.engine.store import RunStore
+<<<<<<< HEAD
 from ngen_weave.errors import ConfigError, InfraError
 from ngen_weave.models.provider import Completion
 from ngen_weave.provenance import ProvenanceRecord
 from ngen_weave.registry import register
 from ngen_weave.workflow import END, START, Control, Worker, Workflow, workflow_class_path
+=======
+from ngen_weave.errors import ConfigError, DataError, InfraError
+from ngen_weave.models.provider import Completion
+from ngen_weave.provenance import ProvenanceRecord
+from ngen_weave.registry import register
+from ngen_weave.workflow import (
+    END,
+    START,
+    Control,
+    Human,
+    Worker,
+    Workflow,
+    workflow_class_path,
+)
+>>>>>>> feat/artifacts
 
 
 @pytest.fixture(autouse=True)
@@ -58,7 +78,13 @@ class TestRunFile:
         assert restored == rf
 
     def test_defaults_for_optional_fields(self):
+<<<<<<< HEAD
         rf = RunFile(format=RUN_FILE_FORMAT, run_id="r", workflow="m.W", status="running", input={})
+=======
+        rf = RunFile(
+            format=RUN_FILE_FORMAT, run_id="r", workflow="m.W", status="running", input={}
+        )
+>>>>>>> feat/artifacts
         assert rf.output is None
         assert rf.error is None
         assert rf.records == []
@@ -126,6 +152,12 @@ class TestRunStore:
 # --- runner tests ------------------------------------------------------------
 
 
+<<<<<<< HEAD
+=======
+
+
+
+>>>>>>> feat/artifacts
 class Root(BaseModel):
     text: str
 
@@ -162,6 +194,10 @@ def make_chain(children, in_t, out_t):
     return chain
 
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> feat/artifacts
 def make_engine(replies: list[str] | None, tmp_path):
     provider = FakeProvider(replies if replies is not None else ["{}"])
     engine = Engine(provider, RunStore(tmp_path / "runs"), checkpointer="memory")
@@ -173,9 +209,14 @@ async def test_linear_worker_chain_completes(tmp_path):
     w2 = make_worker("W2", Piece, Piece)
     w3 = make_worker("W3", Piece, Final)
     chain = make_chain([w1, w2, w3], Root, Final)
+<<<<<<< HEAD
     engine, provider = make_engine(
         ['{"text":"one"}', '{"text":"two"}', '{"text":"three"}'], tmp_path
     )
+=======
+    engine, provider = make_engine(['{"text":"one"}', '{"text":"two"}', '{"text":"three"}'],
+        tmp_path)
+>>>>>>> feat/artifacts
 
     result = await engine.run(chain, Root(text="hi"))
 
@@ -312,9 +353,14 @@ async def test_unmapped_router_label_is_data_error(tmp_path):
         g.add_conditional_edges(gate, lambda s: "nowhere", {"known": fallback})
         g.add_edge(fallback, END)
 
+<<<<<<< HEAD
     chain = type(
         "BadBranches", (Workflow,), {"input_type": Piece, "output_type": Final, "build": build}
     )
+=======
+    chain = type("BadBranches", (Workflow,), {"input_type": Piece, "output_type": Final,
+        "build": build})
+>>>>>>> feat/artifacts
     register(chain, "test")
     engine, _ = make_engine(None, tmp_path)
 
@@ -392,9 +438,14 @@ async def test_collected_fanin_assembles_list_field(tmp_path):
         g.add_edge(r3, reducer)
         g.add_edge(reducer, END)
 
+<<<<<<< HEAD
     chain = type(
         "Collected", (Workflow,), {"input_type": Root, "output_type": Final, "build": build}
     )
+=======
+    chain = type("Collected", (Workflow,), {"input_type": Root, "output_type": Final,
+        "build": build})
+>>>>>>> feat/artifacts
     register(chain, "test")
     engine, provider = make_engine(
         ['{"text":"a"}', '{"text":"b"}', '{"text":"c"}', '{"text":"final"}'], tmp_path
@@ -422,9 +473,14 @@ async def test_dispatch_target_receives_sender_output(tmp_path):
         g.add_conditional_edges(gate, lambda s: "only", {"only": after})
         g.add_edge(after, END)
 
+<<<<<<< HEAD
     chain = type(
         "Dispatched", (Workflow,), {"input_type": Piece, "output_type": Final, "build": build}
     )
+=======
+    chain = type("Dispatched", (Workflow,), {"input_type": Piece, "output_type": Final,
+        "build": build})
+>>>>>>> feat/artifacts
     register(chain, "test")
     engine, provider = make_engine(['{"text":"after-out"}'], tmp_path)
 
@@ -444,22 +500,35 @@ async def test_sqlite_checkpointer_run_and_resume_completed(tmp_path):
     assert result.status == "completed"
 
     fresh_store = RunStore(tmp_path / "runs")
+<<<<<<< HEAD
     engine2 = Engine(
         FakeProvider(['{"text":"ignored"}']),
         fresh_store,
         checkpointer="sqlite",
         db_path=tmp_path / "cp.db",
     )
+=======
+    engine2 = Engine(FakeProvider(['{"text":"ignored"}']), fresh_store, checkpointer="sqlite",
+        db_path=tmp_path / "cp.db")
+>>>>>>> feat/artifacts
     again = await engine2.resume(result.run_id)
     assert again.status == "completed"
     assert again.output == Final(text="persisted")
 
 
+<<<<<<< HEAD
 async def test_resume_with_payload_before_human_support_raises(tmp_path):
     chain = make_chain([make_worker("W1", Root, Final)], Root, Final)
     engine, _ = make_engine(['{"text":"out"}'], tmp_path)
     result = await engine.run(chain, Root(text="hi"))
     with pytest.raises(ConfigError, match="later step"):
+=======
+async def test_resume_with_payload_on_non_waiting_run_raises(tmp_path):
+    chain = make_chain([make_worker("W1", Root, Final)], Root, Final)
+    engine, _ = make_engine(['{"text":"out"}'], tmp_path)
+    result = await engine.run(chain, Root(text="hi"))
+    with pytest.raises(ConfigError, match="not waiting for human input"):
+>>>>>>> feat/artifacts
         await engine.resume(result.run_id, payload={"verdict": "approve"})
 
 
@@ -538,3 +607,234 @@ async def test_transient_infra_failure_recovers_within_budget(tmp_path, monkeypa
         r for r in rf.records if r.kind == "node_activation" and r.payload.get("status") == "retry"
     ]
     assert len(retries) == 1
+<<<<<<< HEAD
+=======
+
+
+# --- human nodes: artifacts, interrupts, resume ------------------------------
+
+
+class Review(BaseModel):
+    verdict: Literal["approve", "reject"]
+    notes: str = ""
+
+
+class StrictReview(BaseModel):
+    verdict: Literal["approve", "reject"]
+    notes: str  # required-without-default
+
+
+def make_human(name, in_t, out_t, state_t=None, prefill=None, extra=None):
+    body = {
+        "input_type": in_t,
+        "output_type": out_t,
+        "state_type": state_t or out_t,
+        "prefill": prefill or {},
+    }
+    body.update(extra or {})
+    cls = type(name, (Human,), body)
+    register(cls, "test")
+    return cls
+
+
+def make_review_flow(h, branches, in_t=Root, out_t=Final, name="Flow"):
+    """START -> h -> conditional edges on the submitted verdict."""
+    h_path = workflow_class_path(h)
+
+    def router(state):
+        return state[h_path]["verdict"]
+
+    def build(self, g):
+        g.add_node(h)
+        for target in branches.values():
+            if target is not END:
+                g.add_node(target)
+                g.add_edge(target, END)
+        g.add_edge(START, h)
+        mapping = {label: target for label, target in branches.items()}
+        g.add_conditional_edges(h, router, mapping)
+
+    wf = type(name, (Workflow,), {"input_type": in_t, "output_type": out_t, "build": build})
+    register(wf, "test")
+    return wf
+
+
+async def test_human_run_writes_artifact_and_waits(tmp_path):
+    import yaml
+
+    h = make_human("ReviewA", Root, Review)
+    fin = make_worker("FinA", Review, Final, prompt="ok {verdict}")
+    rej = make_worker("RejA", Review, Final, prompt="no {verdict}")
+    flow = make_review_flow(h, {"approve": fin, "reject": rej})
+    engine, _ = make_engine(['{"text":"done"}'], tmp_path)
+
+    result = await engine.run(flow, Root(text="hi"))
+
+    assert result.status == "waiting_human"
+    assert result.output is None
+    assert result.waiting["node_path"] == f"{workflow_class_path(flow)}.{workflow_class_path(h)}"
+    artifact = Path(result.waiting["artifact"])
+    data = yaml.safe_load(artifact.read_text())
+    assert set(data) == {"context", "response"}
+    assert data["context"] == {"text": "hi"}
+    assert data["response"] == {"verdict": None, "notes": None}
+    rf = engine.store.load(result.run_id)
+    assert any(
+        r.kind == "node_activation" and r.payload.get("status") == "waiting_human"
+        for r in rf.records
+    )
+
+
+async def test_prefill_seeds_response_slots(tmp_path):
+    import yaml
+
+    h = make_human("ReviewP", Root, Review, prefill={"notes": "text"})
+    fin = make_worker("FinP", Review, Final, prompt="ok {verdict}")
+    rej = make_worker("RejP", Review, Final, prompt="no {verdict}")
+    flow = make_review_flow(h, {"approve": fin, "reject": rej})
+    engine, _ = make_engine(['{"text":"done"}'], tmp_path)
+
+    result = await engine.run(flow, Root(text="seeded"))
+
+    data = yaml.safe_load(Path(result.waiting["artifact"]).read_text())
+    assert data["response"]["notes"] == "seeded"
+
+
+async def test_resume_with_payload_routes_on_verdict_and_completes(tmp_path):
+    h = make_human("ReviewR", Root, Review)
+    approve = make_worker("Approve", Review, Final, prompt="ok {verdict}")
+    reject = make_worker("Reject", Review, Final, prompt="no {verdict}")
+    flow = make_review_flow(h, {"approve": approve, "reject": reject})
+    engine, _ = make_engine(['{"text":"yes"}', '{"text":"no"}'], tmp_path)
+    waiting = await engine.run(flow, Root(text="go"))
+
+    result = await engine.resume(waiting.run_id, payload={"verdict": "approve", "notes": ""})
+
+    assert result.status == "completed"
+    assert result.output == Final(text="yes")
+    rf = engine.store.load(waiting.run_id)
+    writes = [r for r in rf.records if r.kind == "artifact_write"]
+    assert len(writes) == 1
+    assert set(writes[0].payload) == {"artifact", "artifact_sha256"}
+    assert rf.submissions[f"{workflow_class_path(flow)}.{workflow_class_path(h)}"] == {
+        "verdict": "approve",
+        "notes": "",
+    }
+    # The rejected branch exists but never ran.
+    paths = [r.node_path for r in rf.records if r.payload.get("status") == "ok"]
+    assert workflow_class_path(reject) not in " ".join(paths)
+
+
+async def test_resume_reject_branch_routes_to_other_worker(tmp_path):
+    h = make_human("ReviewX", Root, Review)
+    approve = make_worker("ApproveX", Review, Final, prompt="ok {verdict}")
+    reject = make_worker("RejectX", Review, Final, prompt="no {verdict}")
+    flow = make_review_flow(h, {"approve": approve, "reject": reject})
+    engine, _ = make_engine(['{"text":"no"}'], tmp_path)
+    waiting = await engine.run(flow, Root(text="go"))
+
+    result = await engine.resume(waiting.run_id, payload={"verdict": "reject", "notes": ""})
+
+    assert result.status == "completed"
+    assert result.output == Final(text="no")
+
+
+async def test_incomplete_submission_keeps_run_waiting(tmp_path):
+    h = make_human("ReviewS", Root, StrictReview, state_t=StrictReview)
+    fin = make_worker("FinS", StrictReview, Final, prompt="ok {verdict}")
+    rej = make_worker(f"Rej{h.__name__}", h.output_type, Final, prompt="no {verdict}")
+    flow = make_review_flow(h, {"approve": fin, "reject": rej})
+    engine, _ = make_engine(['{"text":"done"}'], tmp_path)
+    waiting = await engine.run(flow, Root(text="go"))
+
+    with pytest.raises(DataError, match="notes"):
+        await engine.resume(waiting.run_id, payload={"verdict": "approve"})
+
+    assert engine.store.load(waiting.run_id).status == "waiting_human"
+
+
+async def test_resume_without_payload_reads_local_artifact(tmp_path):
+    import yaml
+
+    h = make_human("ReviewL", Root, Review)
+    fin = make_worker("FinL", Review, Final, prompt="ok {verdict}")
+    rej = make_worker(f"Rej{h.__name__}", h.output_type, Final, prompt="no {verdict}")
+    flow = make_review_flow(h, {"approve": fin, "reject": rej})
+    engine, _ = make_engine(['{"text":"local"}'], tmp_path)
+    waiting = await engine.run(flow, Root(text="go"))
+
+    artifact = Path(waiting.waiting["artifact"])
+    data = yaml.safe_load(artifact.read_text())
+    data["response"] = {"verdict": "approve", "notes": "filled locally"}
+    artifact.write_text(yaml.safe_dump(data, sort_keys=False))
+
+    result = await engine.resume(waiting.run_id)
+
+    assert result.status == "completed"
+    assert result.output == Final(text="local")
+
+
+async def test_crash_before_submit_resumes_from_fresh_engine_sqlite(tmp_path):
+    h = make_human("ReviewC", Root, Review)
+    fin = make_worker("FinC", Review, Final, prompt="ok {verdict}")
+    rej = make_worker(f"Rej{h.__name__}", h.output_type, Final, prompt="no {verdict}")
+    flow = make_review_flow(h, {"approve": fin, "reject": rej})
+    runs_dir = tmp_path / "runs"
+    db_path = tmp_path / "cp.db"
+    engine, _ = make_engine(['{"text":"after-crash"}'], tmp_path)
+    engine.checkpointer = "sqlite"
+    engine.db_path = db_path
+    waiting = await engine.run(flow, Root(text="go"))
+    assert waiting.status == "waiting_human"
+
+    fresh_provider = FakeProvider(['{"text":"after-crash"}'])
+    fresh = Engine(
+        fresh_provider, RunStore(runs_dir), checkpointer="sqlite", db_path=db_path
+    )
+    result = await fresh.resume(waiting.run_id, payload={"verdict": "approve", "notes": ""})
+
+    assert result.status == "completed"
+    assert result.output == Final(text="after-crash")
+
+
+async def test_transform_override_shapes_the_output(tmp_path):
+    h = make_human(
+        "ReviewT",
+        Root,
+        Final,
+        state_t=Review,
+        extra={"transform": lambda self, context, state: Final(text=state.notes)},
+    )
+
+    def build(self, g):
+        g.add_node(h)
+        g.add_edge(START, h)
+        g.add_edge(h, END)
+
+    flow = type("FlowT", (Workflow,), {"input_type": Root, "output_type": Final, "build": build})
+    register(flow, "test")
+    engine, _ = make_engine([], tmp_path)
+    waiting = await engine.run(flow, Root(text="go"))
+
+    result = await engine.resume(
+        waiting.run_id, payload={"verdict": "approve", "notes": "shaped"}
+    )
+
+    assert result.status == "completed"
+    assert result.output == Final(text="shaped")
+
+
+async def test_resume_completed_run_is_still_a_noop(tmp_path):
+    h = make_human("ReviewN", Root, Review)
+    fin = make_worker("FinN", Review, Final, prompt="ok {verdict}")
+    rej = make_worker(f"Rej{h.__name__}", h.output_type, Final, prompt="no {verdict}")
+    flow = make_review_flow(h, {"approve": fin, "reject": rej})
+    engine, _ = make_engine(['{"text":"done"}'], tmp_path)
+    waiting = await engine.run(flow, Root(text="go"))
+    done = await engine.resume(waiting.run_id, payload={"verdict": "approve", "notes": ""})
+
+    again = await engine.resume(done.run_id)
+
+    assert again.status == "completed"
+    assert again.output == done.output
+>>>>>>> feat/artifacts

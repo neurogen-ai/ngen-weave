@@ -1,8 +1,38 @@
+<<<<<<< HEAD
 """LangGraph compilation and sequential execution."""
+=======
+"""LangGraph compilation and sequential execution.
+
+Engine.compile turns a workflow class into a runnable graph: build() runs
+once against the recording GraphBuilder adapter, and the recorded wiring is
+replayed onto a production StateGraph whose per-key channels hold each child's
+validated-output dump. Identity relays align parent depths so multi-parent
+fan-in targets fire exactly once, after every parent has written; sequential
+semantics stay deterministic at any shape. Node functions assemble each
+child's input per its declared fan-in form, validate at the boundary, execute
+leaves, and emit provenance unconditionally; authors write zero logging code.
+Composites recurse: a composite child compiles eagerly to its own graph,
+activates under its own checkpoint namespace, and reports its subtree's
+accumulated usage upward, so per-scope RunMetadata attribution is correct at
+any depth without special-casing levels. Human leaves interrupt the graph:
+the engine writes the review artifact, parks the run as waiting_human, and a
+resume carrying the submitted response validates it, records its hash, and
+continues the interrupted superstep.
+
+Classes:
+    CompiledGraph: A compiled workflow plus its frozen per-node variant table.
+    Engine: Compile, run, and resume workflows on LangGraph.
+"""
+>>>>>>> feat/artifacts
 
 from __future__ import annotations
 
 import dataclasses
+<<<<<<< HEAD
+=======
+import hashlib
+import json
+>>>>>>> feat/artifacts
 import operator
 import time
 from asyncio import sleep as _sleep  # engine-owned alias; tests patch this
@@ -19,9 +49,17 @@ except ImportError:  # pragma: no cover
 
 from pydantic import BaseModel, ValidationError
 
+<<<<<<< HEAD
 from ngen_weave.engine.state import RunResult, RunStatus
 from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import ConfigError, DataError, InfraError
+=======
+from ngen_weave.artifacts import ArtifactMeta, ArtifactStore, hash_value
+from ngen_weave.engine.state import RunResult, RunStatus
+from ngen_weave.engine.store import RunStore
+from ngen_weave.errors import ConfigError, DataError, InfraError
+from ngen_weave.human import apply_prefill, build_response_slots, validate_completion
+>>>>>>> feat/artifacts
 from ngen_weave.models.provider import CompletionProvider
 from ngen_weave.provenance import (
     PROVENANCE_VERSION,
@@ -34,6 +72,10 @@ from ngen_weave.workflow import (
     END,
     START,
     Control,
+<<<<<<< HEAD
+=======
+    Human,
+>>>>>>> feat/artifacts
     RunContext,
     Worker,
     Workflow,
@@ -65,6 +107,7 @@ class CompiledGraph:
         variants: Child class path -> resolved variant name for every
             model-calling leaf; recorded in each model_call provenance payload.
         builder: The underlying LangGraph StateGraph; compiled per invocation
+<<<<<<< HEAD
             with the engine's checkpointer.
     """
 
@@ -72,6 +115,27 @@ class CompiledGraph:
         self.root = root
         self.variants = variants
         self.builder = builder
+=======
+            with this graph's own checkpointer.
+        humans: Waiting node path -> Human class for every wired human leaf;
+            resume uses it to validate submissions before continuing.
+        saver: This graph's dedicated memory checkpointer; levels must not
+            share one, or interrupt resume silently becomes a no-op.
+    """
+
+    def __init__(
+        self,
+        root: type[Workflow],
+        variants: dict[str, str],
+        builder: Any,
+        humans: dict[str, type[Workflow]] | None = None,
+    ) -> None:
+        self.root = root
+        self.variants = variants
+        self.builder = builder
+        self.humans = humans or {}
+        self.saver: Any = None
+>>>>>>> feat/artifacts
 
 
 def render_prompt(template: str, dump: dict, node_path: str) -> str:
@@ -132,7 +196,13 @@ def parse_output(output_type: type[BaseModel], text: str, node_path: str) -> Bas
 def _single_list_field(input_model: type[BaseModel]) -> str | None:
     """The one list field of an input model, for collected fan-in."""
     names = [
+<<<<<<< HEAD
         name for name, fi in input_model.model_fields.items() if get_origin(fi.annotation) is list
+=======
+        name
+        for name, fi in input_model.model_fields.items()
+        if get_origin(fi.annotation) is list
+>>>>>>> feat/artifacts
     ]
     return names[0] if len(names) == 1 else None
 
@@ -276,6 +346,11 @@ class Engine:
         store: Sole writer of run state under .ngen-weave/runs/.
         checkpointer: "sqlite" (durable, default) or "memory" (tests).
         db_path: SQLite checkpoint database path.
+<<<<<<< HEAD
+=======
+        artifacts: Optional content-addressed store; workflows declaring
+            artifacts persist nothing while it stays unset (tests mostly).
+>>>>>>> feat/artifacts
         max_retries: Retries after the initial attempt for InfraError only.
         retry_backoff_ms: Exponential backoff base in milliseconds; each retry
             waits twice the previous delay.
@@ -289,6 +364,10 @@ class Engine:
         db_path: Path = Path(".ngen-weave/checkpoints.db"),
         max_retries: int = 3,
         retry_backoff_ms: int = 1000,
+<<<<<<< HEAD
+=======
+        artifacts: ArtifactStore | None = None,
+>>>>>>> feat/artifacts
     ) -> None:
         if checkpointer not in {"sqlite", "memory"}:
             raise ConfigError(f"checkpointer must be 'sqlite' or 'memory', got {checkpointer!r}")
@@ -298,9 +377,18 @@ class Engine:
         self.db_path = Path(db_path)
         self.max_retries = max_retries
         self.retry_backoff_ms = retry_backoff_ms
+<<<<<<< HEAD
         self._compiled: dict[tuple, CompiledGraph] = {}
         self._compiling: set[int] = set()  # ids of classes mid-compilation
         self._memory: Any = None  # shared MemorySaver, created lazily
+=======
+        self._artifacts = artifacts
+        self._compiled: dict[tuple, CompiledGraph] = {}
+        self._compiling: set[int] = set()  # ids of classes mid-compilation
+        self._memory: Any = None  # root-level memory checkpointer
+        self._memory_by_graph: dict[int, Any] = {}  # one saver per graph level
+        self._waiting: dict | None = None  # set by the emitter on waiting_human
+>>>>>>> feat/artifacts
 
     # --- compilation ---------------------------------------------------------
 
@@ -377,6 +465,15 @@ class Engine:
             for path, cls in wiring.nodes.items()
             if cls.run is Workflow.run  # composites recurse; every leaf overrides run
         }
+<<<<<<< HEAD
+=======
+        humans = {
+            path: cls for path, cls in wiring.nodes.items() if issubclass(cls, Human)
+        }
+        for path, cls in wiring.nodes.items():
+            if cls.run is Workflow.run:  # composites recurse; every leaf overrides run
+                humans.update(children[path].humans)
+>>>>>>> feat/artifacts
         cell = {
             "plan": plan,
             "variants": variants,
@@ -387,7 +484,15 @@ class Engine:
         }
 
         builder = self._build_production_graph(wiring, recorder.ops, cell)
+<<<<<<< HEAD
         compiled = CompiledGraph(root=wf, variants=variants, builder=builder)
+=======
+        compiled = CompiledGraph(root=wf, variants=variants, builder=builder, humans=humans)
+        if self.checkpointer == "memory":
+            from langgraph.checkpoint.memory import MemorySaver
+
+            compiled.saver = self._memory_by_graph.setdefault(id(compiled), MemorySaver())
+>>>>>>> feat/artifacts
         self._compiled[key] = compiled
         return compiled
 
@@ -498,6 +603,7 @@ class Engine:
                         cls, path, model, ctx, usage, cell, config
                     )
                 else:
+<<<<<<< HEAD
                     attempt = 0
                     while True:
                         attempt += 1
@@ -509,10 +615,38 @@ class Engine:
                                 raise
                             emit("node_activation", {"status": "retry", "attempt": attempt})
                             await _sleep(self.retry_backoff_ms * 2 ** (attempt - 1) / 1000)
+=======
+                    instance = cell["instances"][path]
+                    if isinstance(instance, Human):
+                        attempt = 1
+                        output = await self._execute_human(cls, instance, model, ctx, config)
+                    else:
+                        attempt = 0
+                        while True:
+                            attempt += 1
+                            try:
+                                output = await self._execute_leaf(
+                                    cls, path, model, ctx, usage, cell
+                                )
+                                break
+                            except InfraError:
+                                if attempt > self.max_retries:
+                                    raise
+                                emit("node_activation", {"status": "retry", "attempt": attempt})
+                                await _sleep(self.retry_backoff_ms * 2 ** (attempt - 1) / 1000)
+>>>>>>> feat/artifacts
             except DataError:
                 emit("node_activation", {"status": "invalid"})
                 raise
 
+<<<<<<< HEAD
+=======
+            # Declared artifacts persist before the ok record lands, so the
+            # scope's completion implies its artifacts are already on disk.
+            if cls.artifacts and self._artifacts is not None:
+                self._write_artifacts(cls, model.model_dump(), output.model_dump(), ctx)
+
+>>>>>>> feat/artifacts
             metadata = RunMetadata(
                 iterations=attempt,
                 tokens_in_context=sum(u[0] for u in usage),
@@ -526,6 +660,89 @@ class Engine:
 
         return fn
 
+<<<<<<< HEAD
+=======
+    def _write_artifacts(
+        self,
+        cls: type[Workflow],
+        input_dump: dict,
+        output_dump: dict,
+        ctx: RunContext,
+    ) -> None:
+        """Persist each declared field of a successful activation's output.
+
+        Every declared name must exist on output_type; import-time validation
+        already guarantees that, so this only serializes, stores, links, and
+        emits one artifact_write record per field naming the producing
+        activation and the input hashes it was computed from.
+        """
+        assert self._artifacts is not None
+        input_hashes = {name: hash_value(value) for name, value in input_dump.items()}
+        for name in cls.artifacts:
+            data = json.dumps(output_dump[name], sort_keys=True, ensure_ascii=False).encode("utf-8")
+            meta = ArtifactMeta(
+                run_id=ctx.run_id,
+                node_path=ctx.node_path,
+                name=name,
+                input_hashes=input_hashes,
+            )
+            record = self._artifacts.put(data, meta)
+            self._artifacts.link_meta(record)
+            ctx.emit(
+                "artifact_write",
+                {
+                    "artifact_sha256": record.sha256,
+                    "name": name,
+                    "input_hashes": input_hashes,
+                },
+            )
+
+    async def _execute_human(
+        self,
+        cls: type[Workflow],
+        instance: Human,
+        model: BaseModel,
+        ctx: RunContext,
+        config: RunnableConfig,
+    ) -> BaseModel:
+        """Run one human activation: write the artifact, wait, validate.
+
+        On first entry the engine generates response slots from state_type,
+        seeds them via prefill, writes the two-section YAML artifact, and
+        interrupts. On replay after submission (the resuming config flag marks
+        it) the side effects are skipped and interrupt() returns the submitted
+        response instead. The validated state passes through as the output
+        unless the subclass overrides transform().
+        """
+        import yaml
+        from langgraph.types import interrupt
+
+        if not config["configurable"].get("resuming"):
+            context_dump = model.model_dump()
+            slots = build_response_slots(cls.state_type)
+            apply_prefill(slots, context_dump, dict(cls.prefill or {}))
+            name = ctx.node_path.replace(".", "__")
+            artifact = self.store.save_review_artifact(
+                ctx.run_id,
+                name,
+                yaml.safe_dump({"context": context_dump, "response": slots}, sort_keys=False),
+            )
+            ctx.emit("node_activation", {"status": "waiting_human", "artifact": str(artifact)})
+        response = interrupt({"node_path": ctx.node_path})
+        state = validate_completion(cls.state_type, dict(response))
+        if type(instance).transform is Human.transform:
+            raw = state.model_dump()
+        else:
+            produced = instance.transform(model, state)
+            raw = produced.model_dump() if isinstance(produced, BaseModel) else produced
+        try:
+            return cls.output_type.model_validate(raw)
+        except ValidationError as exc:
+            raise DataError(
+                f"{ctx.node_path}: human output does not match {cls.output_type.__name__}: {exc}"
+            ) from None
+
+>>>>>>> feat/artifacts
     async def _activate_composite(
         self,
         cls: type[Workflow],
@@ -548,12 +765,41 @@ class Engine:
         """
         compiled = cell["children"][path]
         attempt_ns = f"attempt-{config['configurable'].get('run_attempt', 1)}"
+<<<<<<< HEAD
         final = await self._invoke(
             compiled,
             {_INPUT_KEY: model.model_dump()},
             ctx.run_id,
             checkpoint_ns=f"{attempt_ns}:{ctx.node_path}",
         )
+=======
+        # An interrupt continuation forwards the submitted response into the
+        # child graph as its resume command; a first entry seeds ordinary
+        # input. A child that ends interrupted re-raises as this node's own
+        # interrupt, pausing every enclosing graph up to the root.
+        resume_value = config["configurable"].get("ngen_resume_value")
+        if resume_value is not None:
+            from langgraph.types import Command
+
+            seed: Any = Command(resume=resume_value)
+        else:
+            seed = {_INPUT_KEY: model.model_dump()}
+        final = await self._invoke(
+            compiled,
+            seed,
+            ctx.run_id,
+            checkpoint_ns=f"{attempt_ns}:{ctx.node_path}",
+            resuming=bool(config["configurable"].get("resuming")),
+            resume_value=resume_value,
+        )
+        if final.get("__interrupt__"):
+            # Register a real interrupt on every enclosing graph so a root
+            # Command(resume=...) can target it; the framework-delivered value
+            # is ignored, the submitted response travels through config.
+            from langgraph.types import interrupt
+
+            interrupt(None)
+>>>>>>> feat/artifacts
         usage.extend(final.get(_USAGE_KEY, ()))
         output_dump = _select_output(path, final)
         try:
@@ -636,6 +882,11 @@ class Engine:
         """Provenance sink for one activation; unconditional, author-invisible."""
 
         def emit(kind: str, payload: dict) -> None:
+<<<<<<< HEAD
+=======
+            if payload.get("status") == "waiting_human":
+                self._waiting = {"node_path": node_path, "artifact": payload.get("artifact")}
+>>>>>>> feat/artifacts
             record = ProvenanceRecord(
                 version=PROVENANCE_VERSION,
                 run_id=run_id,
@@ -662,6 +913,7 @@ class Engine:
         """Continue run_id from its checkpoint.
 
         Resuming a completed run is a no-op returning the stored output.
+<<<<<<< HEAD
         Human submission lands with human-node support and raises until then.
         """
         run_file = self.store.load(run_id)
@@ -669,10 +921,29 @@ class Engine:
             raise ConfigError("human review submission arrives in a later step")
         if run_file.status == "completed":
             cls = registry_get(run_file.workflow)
+=======
+        A waiting_human run takes the submitted response from payload (remote
+        JSON form) or from the artifact file on disk when payload is None
+        (local YAML form); both carry identical payloads. The response is
+        validated before anything moves, an artifact_write record captures
+        its hash, and the interrupted superstep continues under the same
+        checkpoint namespace. A failed or otherwise stopped run re-executes
+        from the top under a fresh namespace, seeded with its stored input.
+        An explicit payload on a non-waiting run is a ConfigError.
+        """
+        run_file = self.store.load(run_id)
+        if payload is not None and run_file.status != "waiting_human":
+            raise ConfigError(f"run {run_id} is not waiting for human input")
+        cls = registry_get(run_file.workflow)
+        cached = next((c for c in self._compiled.values() if c.root is cls), None)
+        compiled = cached if cached is not None else self.compile(cls)
+        if run_file.status == "completed":
+>>>>>>> feat/artifacts
             assert run_file.output is not None
             return RunResult(
                 run_id, "completed", cls.output_type.model_validate(run_file.output), None
             )
+<<<<<<< HEAD
         cls = registry_get(run_file.workflow)
         cached = next((c for c in self._compiled.values() if c.root is cls), None)
         compiled = cached if cached is not None else self.compile(cls)
@@ -681,11 +952,64 @@ class Engine:
         return await self._drive(compiled, {_INPUT_KEY: run_file.input}, run_id)
 
     async def _drive(self, compiled: CompiledGraph, seed: dict | None, run_id: str) -> RunResult:
+=======
+        if run_file.status == "waiting_human":
+            node_path, info = self._latest_waiting(run_file)
+            human_key = max(
+                (k for k in compiled.humans if node_path == k or node_path.endswith("." + k)),
+                key=len,
+                default=None,
+            )
+            if human_key is None:
+                raise ConfigError(f"waiting node {node_path} is not a human node")
+            human_cls = compiled.humans[human_key]
+            if payload is not None:
+                response = payload
+            else:
+                data = self.store.read_review_artifact(Path(info["artifact"]))
+                response = data.get("response")
+                if not isinstance(response, dict):
+                    raise ConfigError(
+                        f"review artifact {info['artifact']} has no submitted response"
+                    )
+            # Rejection leaves the run waiting; nothing else about it changes.
+            validate_completion(human_cls.state_type, dict(response))
+            digest = hashlib.sha256(
+                json.dumps(response, sort_keys=True).encode()
+            ).hexdigest()
+            self._emitter(run_id, node_path)(
+                "artifact_write",
+                {"artifact": info["artifact"], "artifact_sha256": digest},
+            )
+            run_file = self.store.load(run_id)  # reload above emitter's save
+            run_file.submissions[node_path] = response
+            self.store.save(run_file)
+            return await self._drive(compiled, None, run_id, resume_payload=response)
+        return await self._drive(compiled, {_INPUT_KEY: run_file.input}, run_id)
+
+    @staticmethod
+    def _latest_waiting(run_file: Any) -> tuple[str, dict]:
+        """Return (node_path, payload) of the most recent waiting_human record."""
+        for record in reversed(run_file.records):
+            if record.kind == "node_activation" and record.payload.get("status") == "waiting_human":
+                return record.node_path, record.payload
+        raise ConfigError(f"run {run_file.run_id} is waiting_human without a waiting record")
+
+    async def _drive(
+        self,
+        compiled: CompiledGraph,
+        seed: dict | None,
+        run_id: str,
+        *,
+        resume_payload: dict | None = None,
+    ) -> RunResult:
+>>>>>>> feat/artifacts
         """Invoke the graph, then write the terminal transition to the run file.
 
         A completed run also emits the root scope's node_activation record on
         the root class path, so every level of nesting carries per-scope
         RunMetadata: composites report from their own node functions, the root
+<<<<<<< HEAD
         reports here once its whole subtree succeeded.
         """
         status: RunStatus = "failed"
@@ -709,6 +1033,68 @@ class Engine:
         except Exception as exc:
             error = {"type": type(exc).__name__, "message": str(exc)}
         if status == "completed":
+=======
+        reports here once its whole subtree succeeded. A resume_payload drive
+        continues the interrupted attempt under its existing checkpoint
+        namespace instead of opening a new one; the resuming flag tells human
+        nodes to skip artifact side effects on replay.
+        """
+        from langgraph.types import Command
+
+        status: RunStatus = "failed"
+        error: dict[str, str] | None = None
+        output_dump: dict | None = None
+        waiting_info: dict | None = None
+        sink: list[Usage] = []
+        started = time.perf_counter()
+        self._waiting = None
+        # Each fresh drive gets a new checkpoint namespace: LangGraph does not
+        # reschedule a node that raised, so replaying the old namespace would
+        # end immediately. Interrupt resumes deliberately reuse the namespace.
+        run_file = self.store.load(run_id)
+        if resume_payload is None:
+            run_file.attempts += 1
+            self.store.save(run_file)
+        attempt_ns = f"attempt-{run_file.attempts}"
+        invoke_seed: Any = seed
+        if resume_payload is not None:
+            invoke_seed = Command(resume=resume_payload)
+        try:
+            final = await self._invoke(
+                compiled,
+                invoke_seed,
+                run_id,
+                checkpoint_ns=attempt_ns,
+                resuming=resume_payload is not None,
+                resume_value=resume_payload,
+            )
+            if self._waiting is not None:
+                status = "waiting_human"
+                waiting_info = dict(self._waiting)
+            else:
+                output_dump = _select_output(workflow_class_path(compiled.root), final)
+                compiled.root.output_type.model_validate(output_dump)
+                status = "completed"
+                sink.extend(final.get(_USAGE_KEY, ()))
+        except Exception as exc:
+            error = {"type": type(exc).__name__, "message": str(exc)}
+        if status == "completed":
+            # The root workflow is not a node in its own graph, so artifacts
+            # it declares persist here, beside its scope's ok record.
+            root_path = workflow_class_path(compiled.root)
+            if compiled.root.artifacts and self._artifacts is not None:
+                self._write_artifacts(
+                    compiled.root,
+                    self.store.load(run_id).input,
+                    output_dump,
+                    RunContext(
+                        run_id=run_id,
+                        node_path=root_path,
+                        emit=self._emitter(run_id, root_path),
+                        provider=self.provider,
+                    ),
+                )
+>>>>>>> feat/artifacts
             metadata = RunMetadata(
                 iterations=1,
                 tokens_in_context=sum(u[0] for u in sink),
@@ -725,6 +1111,12 @@ class Engine:
         run_file.error = error
         run_file.output = output_dump
         self.store.save(run_file)
+<<<<<<< HEAD
+=======
+        if status == "waiting_human":
+            assert waiting_info is not None
+            return RunResult(run_id, status, None, waiting_info)
+>>>>>>> feat/artifacts
         if error is not None:
             return RunResult(run_id, status, None, None)
         return RunResult(
@@ -734,33 +1126,67 @@ class Engine:
     async def _invoke(
         self,
         compiled: CompiledGraph,
+<<<<<<< HEAD
         seed: dict | None,
         run_id: str,
         *,
         checkpoint_ns: str = "",
+=======
+        seed: Any,
+        run_id: str,
+        *,
+        checkpoint_ns: str = "",
+        resuming: bool = False,
+        resume_value: Any = None,
+>>>>>>> feat/artifacts
     ) -> dict:
         """Invoke the builder's graph under the run's checkpoint thread.
 
         checkpoint_ns isolates drive attempts and nested activations under
         the same run id; the root graph of the first attempt uses the empty
+<<<<<<< HEAD
         namespace's attempt prefix set by _drive. Usage totals travel back
         through the graph's accumulated state channel, never through config.
+=======
+        namespace's attempt prefix set by _drive. resuming marks an interrupt
+        continuation so human nodes skip artifact side effects on replay;
+        resume_value carries the submitted response down into nested graphs.
+        Usage totals travel back through the graph's accumulated state
+        channel, never through config.
+>>>>>>> feat/artifacts
         """
         config = {
             "configurable": {
                 "thread_id": run_id,
                 "checkpoint_ns": checkpoint_ns,
+<<<<<<< HEAD
+=======
+                "resuming": resuming,
+                "ngen_resume_value": resume_value,
+>>>>>>> feat/artifacts
                 "run_attempt": int(checkpoint_ns.split(":")[0].split("-")[1])
                 if checkpoint_ns
                 else 1,
             }
         }
         if self.checkpointer == "memory":
+<<<<<<< HEAD
             if self._memory is None:
                 from langgraph.checkpoint.memory import MemorySaver
 
                 self._memory = MemorySaver()
             graph = compiled.builder.compile(checkpointer=self._memory)
+=======
+            saver = compiled.saver
+            if saver is None:
+                from langgraph.checkpoint.memory import MemorySaver
+
+                saver = self._memory  # root graph compiled before this assignment
+                if saver is None:
+                    saver = self._memory = MemorySaver()
+                    compiled.saver = saver
+            graph = compiled.builder.compile(checkpointer=saver)
+>>>>>>> feat/artifacts
             return await graph.ainvoke(seed, config=config)
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
