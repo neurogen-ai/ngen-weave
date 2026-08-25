@@ -3,7 +3,7 @@
 # Usage: scripts/complexity.sh                        # uses max-complexity from ruff.toml
 #        CX_THRESHOLD=10 scripts/complexity.sh       # pretend the ceiling is 10
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 threshold="${CX_THRESHOLD:-}"
 if [ -n "$threshold" ]; then
