@@ -545,7 +545,7 @@ class Engine:
         path = workflow_class_path(cls)
 
         async def fn(state: dict, config: RunnableConfig) -> dict:
-            run_id = config["configurable"]["thread_id"]
+            run_id = config["configurable"].get("ngen_run_id", config["configurable"]["thread_id"])
             node_path = join_path(cell["base"], path)
             emit = self._emitter(run_id, node_path)
             started = time.perf_counter()
@@ -732,6 +732,7 @@ class Engine:
             checkpoint_ns=f"{attempt_ns}:{ctx.node_path}",
             resuming=bool(config["configurable"].get("resuming")),
             resume_value=resume_value,
+            nested=True,
         )
         if final.get("__interrupt__"):
             # Register a real interrupt on every enclosing graph so a root
@@ -1017,20 +1018,29 @@ class Engine:
         checkpoint_ns: str = "",
         resuming: bool = False,
         resume_value: Any = None,
+        nested: bool = False,
     ) -> dict:
         """Invoke the builder's graph under the run's checkpoint thread.
 
         checkpoint_ns isolates drive attempts and nested activations under
         the same run id; the root graph of the first attempt uses the empty
-        namespace's attempt prefix set by _drive. resuming marks an interrupt
-        continuation so human nodes skip artifact side effects on replay;
-        resume_value carries the submitted response down into nested graphs.
-        Usage totals travel back through the graph's accumulated state
-        channel, never through config.
+        namespace's attempt prefix set by _drive. Nested graphs get their own
+        thread id derived from the run id and namespace: langgraph ignores a
+        caller-supplied checkpoint_ns at top-level invocation, so levels
+        sharing one raw thread id would interleave checkpoints in a single
+        chain and a depth-2 interrupt would resume against the child graph's
+        state. The derived id is deterministic (attempt number plus full node
+        path), so a resumed run regenerates it exactly. resuming marks an
+        interrupt continuation so human nodes skip artifact side effects on
+        replay; resume_value carries the submitted response down into nested
+        graphs. Usage totals travel back through the graph's accumulated
+        state channel, never through config.
         """
+        thread_id = f"{run_id}:{checkpoint_ns}" if nested else run_id
         config = {
             "configurable": {
-                "thread_id": run_id,
+                "thread_id": thread_id,
+                "ngen_run_id": run_id,
                 "checkpoint_ns": checkpoint_ns,
                 "resuming": resuming,
                 "ngen_resume_value": resume_value,
