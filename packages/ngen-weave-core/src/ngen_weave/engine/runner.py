@@ -170,9 +170,7 @@ def parse_output(output_type: type[BaseModel], text: str, node_path: str) -> Bas
 def _single_list_field(input_model: type[BaseModel]) -> str | None:
     """The one list field of an input model, for collected fan-in."""
     names = [
-        name
-        for name, fi in input_model.model_fields.items()
-        if get_origin(fi.annotation) is list
+        name for name, fi in input_model.model_fields.items() if get_origin(fi.annotation) is list
     ]
     return names[0] if len(names) == 1 else None
 
@@ -423,9 +421,7 @@ class Engine:
             for path, cls in wiring.nodes.items()
             if cls.run is Workflow.run  # composites recurse; every leaf overrides run
         }
-        humans = {
-            path: cls for path, cls in wiring.nodes.items() if issubclass(cls, Human)
-        }
+        humans = {path: cls for path, cls in wiring.nodes.items() if issubclass(cls, Human)}
         for path, cls in wiring.nodes.items():
             if cls.run is Workflow.run:  # composites recurse; every leaf overrides run
                 humans.update(children[path].humans)
@@ -873,9 +869,7 @@ class Engine:
                     )
             # Rejection leaves the run waiting; nothing else about it changes.
             validate_completion(human_cls.state_type, dict(response))
-            digest = hashlib.sha256(
-                json.dumps(response, sort_keys=True).encode()
-            ).hexdigest()
+            digest = hashlib.sha256(json.dumps(response, sort_keys=True).encode()).hexdigest()
             self._emitter(run_id, node_path)(
                 "artifact_write",
                 {"artifact": info["artifact"], "artifact_sha256": digest},

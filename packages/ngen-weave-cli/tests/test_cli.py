@@ -72,9 +72,7 @@ def fake_provider(monkeypatch):
     from tests.fakes import FakeProvider
 
     provider = FakeProvider()
-    monkeypatch.setattr(
-        "ngen_weave_cli.context.default_provider", lambda models_file: provider
-    )
+    monkeypatch.setattr("ngen_weave_cli.context.default_provider", lambda models_file: provider)
     return provider
 
 
@@ -159,9 +157,7 @@ def test_run_config_overrides_positional(workflow_module, fake_provider, tmp_pat
 
 
 def test_resume_completed_run_is_noop(workflow_module, fake_provider, tmp_path):
-    (tmp_path / "ngen-weave.json").write_text(
-        json.dumps({"modules": [FIXTURE_MODULE]})
-    )
+    (tmp_path / "ngen-weave.json").write_text(json.dumps({"modules": [FIXTURE_MODULE]}))
     config = _write(tmp_path, "ngw.yaml", CONFIG_YAML)
     input_file = _write(tmp_path, "input.json", INPUT_JSON)
     run_result = runner.invoke(app, ["run", "x", "-i", input_file, "-c", config])

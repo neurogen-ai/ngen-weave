@@ -153,8 +153,7 @@ def status(run_id: str = typer.Argument(help="Run id to inspect.")) -> None:
         (
             record.node_path
             for record in reversed(run_file.records)
-            if record.kind == "node_activation"
-            and record.payload.get("status") == "waiting_human"
+            if record.kind == "node_activation" and record.payload.get("status") == "waiting_human"
         ),
         None,
     )

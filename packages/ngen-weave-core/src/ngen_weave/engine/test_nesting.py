@@ -92,9 +92,7 @@ async def test_two_level_nesting_attributes_cost_per_scope(tmp_path):
     outer_w = make_worker("OW", Piece, Final)
     outer = make_chain("Outer", [inner, outer_w], Root, Final)
 
-    engine = make_engine(
-        ['{"text":"i1"}', '{"text":"i2"}', '{"text":"o1"}'], tmp_path
-    )
+    engine = make_engine(['{"text":"i1"}', '{"text":"i2"}', '{"text":"o1"}'], tmp_path)
     result = await engine.run(outer, Root(text="hi"))
 
     assert result.status == "completed"
@@ -171,9 +169,7 @@ async def test_nested_composites_fan_in_collected(tmp_path):
     # Depth-2 activations exist under both branch composites.
     a_path = workflow_class_path(branch_a_inner)
     b_path = workflow_class_path(branch_b_inner)
-    depth2 = {
-        r.node_path for r in rf.records if a_path in r.node_path or b_path in r.node_path
-    }
+    depth2 = {r.node_path for r in rf.records if a_path in r.node_path or b_path in r.node_path}
     assert len(depth2) >= 2
     reduce_meta = [
         r.payload["metadata"]
@@ -321,9 +317,7 @@ def _make_review_inner():
         g.add_edge(fin, END)
         g.add_edge(rej, END)
         g.add_edge(START, h)
-        g.add_conditional_edges(
-            h, lambda s: s[hp]["verdict"], {"approve": fin, "reject": rej}
-        )
+        g.add_conditional_edges(h, lambda s: s[hp]["verdict"], {"approve": fin, "reject": rej})
 
     inner = type(
         "ReviewInner",
