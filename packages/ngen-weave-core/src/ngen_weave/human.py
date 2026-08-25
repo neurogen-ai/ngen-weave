@@ -26,7 +26,13 @@ _PRIMITIVES = (str, int, float, bool)
 
 def _is_slot_leaf(annotation: Any) -> bool:
     """True for str/int/float/bool, enum subclasses, and literals."""
+<<<<<<< HEAD
     if annotation in _PRIMITIVES or (isinstance(annotation, type) and issubclass(annotation, Enum)):
+=======
+    if annotation in _PRIMITIVES or (
+        isinstance(annotation, type) and issubclass(annotation, Enum)
+    ):
+>>>>>>> feat/human-nodes
         return True
     return get_origin(annotation) is Literal and all(
         isinstance(v, _PRIMITIVES + (str,)) for v in get_args(annotation)
