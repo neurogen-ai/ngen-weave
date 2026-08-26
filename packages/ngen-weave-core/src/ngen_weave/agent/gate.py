@@ -57,6 +57,15 @@ class PermissionGate:
         self._calls_used += 1
         return result
 
+    def specs(self) -> tuple:
+        """Expose the wrapped registry's ToolSpecs without exposing the registry.
+
+        The agent loop's system prompt lists the tool surface from here; the
+        underlying ToolRegistry stays invisible so calls can only run through
+        call() and its permission checks.
+        """
+        return self._inner.specs()
+
     def _deny(self, name: str) -> None:
         """Emit the permission_denied record once, then raise per policy."""
         policy = self._permissions.denied_policy

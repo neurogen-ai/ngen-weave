@@ -1,6 +1,21 @@
-"""Agent-specific error taxonomy."""
+"""Agent-specific error taxonomy.
 
-from ngen_weave.errors import DataError, NgWeaveError
+AgentReplyError is re-exported from the core taxonomy rather than redefined:
+it already exists as a retryable NgWeaveError (not DataError), and "exhausted
+without a parseable reply" is exactly that semantic -- a content failure the
+engine may recover by retrying, unlike DataError failures which never retry.
+"""
+
+from ngen_weave.errors import AgentReplyError, DataError, NgWeaveError
+
+__all__ = [
+    "AgentReplyError",
+    "DataError",
+    "DeniedToolError",
+    "NgWeaveError",
+    "ReturnToReviewError",
+    "UnknownToolError",
+]
 
 
 class UnknownToolError(DataError):

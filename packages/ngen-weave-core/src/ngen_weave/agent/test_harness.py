@@ -105,3 +105,5 @@ async def test_unknown_tool_raises_unknown_tool_error():
     registry.register(make_tool())
     with pytest.raises(UnknownToolError, match="unknown tool 'missing'"):
         await registry.call("missing", {})
+
+
