@@ -1,6 +1,6 @@
 [project]
 name = "ngen-weave"
-version = "0.1.0"
+version = "0.1.1"
 description = "Durable human-in-the-loop AI workflows on LangGraph"
 requires-python = ">=3.12"
 license = "Apache-2.0"
