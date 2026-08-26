@@ -157,7 +157,7 @@ def make_worker(name: str, in_t, out_t, prompt: str = "echo {text}"):
     return cls
 
 
-def make_chain(children, in_t, out_t):
+def make_chain(children, in_t, out_t, name: str = "Chain"):
     def build(self, g):
         for c in children:
             g.add_node(c)
@@ -166,7 +166,7 @@ def make_chain(children, in_t, out_t):
             g.add_edge(a, b)
         g.add_edge(children[-1], END)
 
-    chain = type("Chain", (Workflow,), {"input_type": in_t, "output_type": out_t, "build": build})
+    chain = type(name, (Workflow,), {"input_type": in_t, "output_type": out_t, "build": build})
     register(chain, "test")
     return chain
 
@@ -896,3 +896,32 @@ async def test_collect_order_sort_key_reorders_fanin(tmp_path):
     # order is MARKER-2 < MARKER-3 < MARKER-1.
     positions = [collector_prompt.index(f"MARKER-{i}") for i in (2, 3, 1)]
     assert positions == sorted(positions)
+
+
+class TestCompileCacheKey:
+    """Compile caching must key on outer scopes, not just class and bindings."""
+
+    async def test_same_class_different_outer_scopes_get_distinct_graphs(self, tmp_path):
+        leaf = make_worker("CacheLeaf", Root, Piece)
+        middle = make_chain([leaf], Root, Piece)
+        outer_a = make_chain([middle], Root, Piece, name="CacheOuterA")
+        outer_b = make_chain([middle], Root, Piece, name="CacheOuterB")
+        # Same root class and the same bindings dict: the pre-fix key (root
+        # path + models, without outer_scopes) collides on the second
+        # lookup. Only outer_scopes differs between the two compilations.
+        models = {workflow_class_path(outer_a): "slow"}
+        engine, provider = make_engine(["{}"], tmp_path)
+        graph_a = engine.compile(middle, models, outer_scopes=(outer_a,))
+        graph_b = engine.compile(middle, models, outer_scopes=(outer_b,))
+        assert graph_a is not graph_b
+        assert graph_a.variants[workflow_class_path(leaf)] == "slow"
+        assert graph_b.variants[workflow_class_path(leaf)] == "default"
+
+    async def test_identical_compilation_returns_cached_object(self, tmp_path):
+        leaf = make_worker("CacheLeaf2", Root, Piece)
+        chain = make_chain([leaf], Root, Piece)
+        engine, _ = make_engine(["{}"], tmp_path)
+        models = {workflow_class_path(leaf): "fast"}
+        first = engine.compile(chain, models)
+        second = engine.compile(chain, models)
+        assert first is second
