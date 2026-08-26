@@ -463,10 +463,6 @@ class Engine:
         self, wf: type[Workflow], models: dict, outer_scopes: tuple, key: tuple
     ) -> CompiledGraph:
         root_path = workflow_class_path(wf)
-        key = (root_path, tuple(sorted(models.items())))
-        cached = self._compiled.get(key)
-        if cached is not None:
-            return cached
 
         recorder = _StateGraphAdapter()
         instance = _instantiate(wf)
