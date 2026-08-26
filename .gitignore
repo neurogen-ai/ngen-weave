@@ -2,3 +2,4 @@ worktrees/
 __pycache__/
 feedback/
 runs/
+.ngen-weave/
