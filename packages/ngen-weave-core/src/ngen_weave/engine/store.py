@@ -228,15 +228,72 @@ class RunStore:
         """Transition a run's status and return the updated file.
 
         Raises:
-            ConfigError: Unknown run id.
+            UnknownRunError: Unknown run id.
         """
         with self._conn:
             cursor = self._conn.execute(
                 "UPDATE runs SET status = ? WHERE run_id = ?", (status, run_id)
             )
         if cursor.rowcount != 1:
-            raise ConfigError(f"unknown run: {run_id}")
+            raise UnknownRunError(f"unknown run: {run_id}")
         return self.load(run_id)
+
+    def peek(self, run_id: str) -> RunFile:
+        """Return a header-only RunFile (empty records) with current status.
+
+        Cheap boundary reads for callers that need the current status and
+        identity but not the record stream.
+
+        Raises:
+            UnknownRunError: Unknown run id.
+        """
+        row = self._fetch_row(run_id)
+        if row is None:
+            raise UnknownRunError(f"unknown run: {run_id}")
+        return self._header_file(row, [])
+
+    def usage_totals(self, run_id: str) -> tuple[float, int]:
+        """Return (cost_usd, activation count) from the maintained columns.
+
+        Both columns are updated transactionally by append(), so budget checks
+        never rescan records.
+
+        Raises:
+            UnknownRunError: Unknown run id.
+        """
+        row = self._conn.execute(
+            "SELECT cost_usd, activations FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            raise UnknownRunError(f"unknown run: {run_id}")
+        return float(row["cost_usd"] or 0), int(row["activations"] or 0)
+
+    def last_node_activation(self, run_id: str) -> ProvenanceRecord | None:
+        """Return the most recent node_activation record without loading the stream.
+
+        Boundary hooks read the crossing activation's node path and metadata
+        payload from this single indexed row instead of rescanning records.
+
+        Raises:
+            UnknownRunError: Unknown run id.
+        """
+        if self._fetch_row(run_id) is None:
+            raise UnknownRunError(f"unknown run: {run_id}")
+        rec = self._conn.execute(
+            "SELECT node_path, kind, ts, payload_json FROM records "
+            "WHERE run_id = ? AND kind = 'node_activation' ORDER BY seq DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if rec is None:
+            return None
+        return ProvenanceRecord(
+            version=PROVENANCE_VERSION,
+            run_id=run_id,
+            node_path=rec["node_path"],
+            kind="node_activation",
+            ts=rec["ts"],
+            payload=json.loads(rec["payload_json"]),
+        )
 
     def list(self) -> list[RunFile]:
         """Return header-only snapshots of every run, ordered by run id.

@@ -103,10 +103,12 @@ class RunResult:
         run_id: Identifier of the run.
         status: Status at the time the call returned.
         output: Validated root output model when completed, else None.
-        waiting: {"node_path", "artifact"} when waiting_human, else None.
+        waiting: {"node_path", "artifact"} when waiting_human, and
+            {"node_path", "reason": "budget_exhausted"} after a budget pause;
+            None otherwise.
     """
 
     run_id: str
     status: RunStatus
     output: BaseModel | None
-    waiting: dict | None
+    waiting: dict | None = None

@@ -121,5 +121,6 @@ def _build_engine(
         max_retries=settings.max_retries,
         retry_backoff_ms=settings.retry_backoff_ms,
         artifacts=artifacts,
+        settings=settings,
     )
     return AppContext(engine=engine, store=store, artifacts=artifacts)
