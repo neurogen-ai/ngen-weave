@@ -6,22 +6,21 @@ stay thin translations and tests inject a fake provider here.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from ngen_weave.artifacts import ArtifactStore
 from ngen_weave.config import ResolvedConfig, RunSettings
-from ngen_weave.discovery import discover, discover_entry_points
+from ngen_weave.discovery import discover_entry_points
 from ngen_weave.engine.runner import Engine
 from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import ConfigError
+from ngen_weave.manifest import discover_from_manifest, load_project_manifest
 from ngen_weave.models.provider import CompletionProvider
 from ngen_weave.models.registry import LiteLLMProvider, ModelRegistry
 from ngen_weave.workflow import Workflow
 
 NGEN_WEAVE_DIR = Path(".ngen-weave")
-MANIFEST = Path("ngen-weave.json")
 CONFIG_SUFFIXES = {".yaml", ".yml", ".json"}
 
 _cached_registry: dict[str, type[Workflow]] | None = None
@@ -55,15 +54,8 @@ def merged_registry() -> dict[str, type[Workflow]]:
     if _cached_registry is not None:
         return _cached_registry
     found = dict(discover_entry_points())
-    if MANIFEST.is_file():
-        try:
-            manifest = json.loads(MANIFEST.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ConfigError(f"{MANIFEST}: cannot read project manifest: {exc}") from exc
-        modules = manifest.get("modules", [])
-        if not isinstance(modules, list) or not all(isinstance(m, str) for m in modules):
-            raise ConfigError(f"{MANIFEST}: 'modules' must be a list of module paths")
-        found.update(discover(modules, source=f"project manifest {MANIFEST}"))
+    manifest = load_project_manifest()
+    found.update(discover_from_manifest(manifest))
     _cached_registry = found
     return found
 

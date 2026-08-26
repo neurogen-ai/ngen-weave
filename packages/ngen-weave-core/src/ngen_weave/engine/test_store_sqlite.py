@@ -13,6 +13,7 @@ from ngen_weave.engine.state import RUN_FILE_FORMAT, RunFile
 from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import ConfigError
 from ngen_weave.provenance import ProvenanceRecord
+from ngen_weave.service import UnknownRunError
 
 
 def _record(run_id: str, seq: int, kind: str, payload: dict) -> ProvenanceRecord:
@@ -72,7 +73,7 @@ class TestRoundTrip:
 
     def test_load_unknown_run_raises(self, tmp_path: Path):
         store = RunStore(tmp_path / "runs")
-        with pytest.raises(ConfigError, match="unknown run"):
+        with pytest.raises(UnknownRunError, match="unknown run"):
             store.load("nope")
 
 

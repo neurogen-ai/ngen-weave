@@ -20,6 +20,7 @@ from ngen_weave.engine.state import RUN_FILE_FORMAT, RunFile, RunStatus
 from ngen_weave.errors import ConfigError
 from ngen_weave.export import load_run_json
 from ngen_weave.provenance import PROVENANCE_VERSION, ProvenanceRecord
+from ngen_weave.service import UnknownRunError
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS runs (
@@ -85,11 +86,11 @@ class RunStore:
         """Return the run file for run_id.
 
         Raises:
-            ConfigError: Unknown run id.
+            UnknownRunError: Unknown run id.
         """
         row = self._fetch_row(run_id)
         if row is None:
-            raise ConfigError(f"unknown run: {run_id}")
+            raise UnknownRunError(f"unknown run: {run_id}")
         records = [
             ProvenanceRecord(
                 version=PROVENANCE_VERSION,
