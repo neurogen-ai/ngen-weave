@@ -787,3 +787,112 @@ async def test_resume_completed_run_is_still_a_noop(tmp_path):
 
     assert again.status == "completed"
     assert again.output == done.output
+
+
+class _ParentOut(BaseModel):
+    text: str
+    sort_key: int
+
+
+def _build_marker_fanin(collector_attrs: dict):
+    """Three marker-emitting workers fanning into one list-collecting child."""
+
+    w1 = make_worker("MW1", Root, _ParentOut, prompt="review {text}")
+    w2 = make_worker("MW2", Root, _ParentOut, prompt="review {text}")
+    w3 = make_worker("MW3", Root, _ParentOut, prompt="review {text}")
+
+    class Reviews(BaseModel):
+        reviews: list[_ParentOut] = Field(min_length=3, max_length=3)
+
+    collector_cls = type(
+        "MarkerCollector",
+        (Worker,),
+        collector_attrs | {"input_type": Reviews, "output_type": Final},
+    )
+    register(collector_cls, "test")
+
+    def build(self, g):
+        g.add_node(w1)
+        g.add_node(w2)
+        g.add_node(w3)
+        g.add_node(collector_cls)
+        g.add_edge(START, w1)
+        # Declaration order of the fan-in edges fixes assembly order:
+        # w1, then w2, then w3.
+        g.add_edge(w1, collector_cls)
+        g.add_edge(w1, w2)
+        g.add_edge(w2, collector_cls)
+        g.add_edge(w2, w3)
+        g.add_edge(w3, collector_cls)
+        g.add_edge(collector_cls, END)
+
+    chain = type(
+        "MarkerFanin",
+        (Workflow,),
+        {"input_type": Root, "output_type": Final, "build": build},
+    )
+    register(chain, "test")
+    return chain
+
+
+_REPLIES = [
+    '{"text":"MARKER-1","sort_key":3}',
+    '{"text":"MARKER-2","sort_key":1}',
+    '{"text":"MARKER-3","sort_key":2}',
+    '{"text":"collected"}',
+]
+
+
+async def test_collected_fanin_preserves_every_marker_in_declaration_order(tmp_path):
+    chain = _build_marker_fanin(
+        {
+            "prompt": "{reviews[0].text} | {reviews[1].text} | {reviews[2].text}",
+        }
+    )
+    engine, provider = make_engine(_REPLIES, tmp_path)
+
+    result = await engine.run(chain, Root(text="hi"))
+
+    assert result.status == "completed"
+    collector_prompt = provider.calls[3][0][0]["content"]
+    # NO LOSS: every parent marker reaches the collector prompt exactly once.
+    for i in (1, 2, 3):
+        assert collector_prompt.count(f"MARKER-{i}") == 1
+    # DEFAULT ORDER: add_edge declaration order (index positions ascending).
+    positions = [collector_prompt.index(f"MARKER-{i}") for i in (1, 2, 3)]
+    assert positions == sorted(positions)
+
+
+async def test_collected_fanin_is_deterministic_across_fresh_engines(tmp_path):
+    chain = _build_marker_fanin(
+        {
+            "prompt": "{reviews[0].text} | {reviews[1].text} | {reviews[2].text}",
+        }
+    )
+    prompts = []
+    for i in range(2):
+        engine, provider = make_engine(_REPLIES, tmp_path / f"run{i}")
+        result = await engine.run(chain, Root(text="hi"))
+        assert result.status == "completed"
+        prompts.append(provider.calls[3][0][0]["content"])
+
+    assert prompts[0] == prompts[1]
+
+
+@pytest.mark.xfail(strict=True, reason="collect_order lands in v0.1.3")
+async def test_collect_order_sort_key_reorders_fanin(tmp_path):
+    chain = _build_marker_fanin(
+        {
+            "collect_order": "sort_key",
+            "prompt": "{reviews[0].text} | {reviews[1].text} | {reviews[2].text}",
+        }
+    )
+    engine, provider = make_engine(_REPLIES, tmp_path)
+
+    result = await engine.run(chain, Root(text="hi"))
+    assert result.status == "completed"
+    collector_prompt = provider.calls[3][0][0]["content"]
+    # sort_key values are MARKER-1:3, MARKER-2:1, MARKER-3:2, so sorted
+    # order is MARKER-2 < MARKER-3 < MARKER-1.
+    positions = [collector_prompt.index(f"MARKER-{i}") for i in (2, 3, 1)]
+    assert positions == sorted(positions)
