@@ -43,6 +43,7 @@ except ImportError:  # pragma: no cover
 
 from pydantic import BaseModel, ValidationError
 
+from ngen_weave.agent.errors import ReturnToReviewError
 from ngen_weave.artifacts import ArtifactMeta, ArtifactStore, hash_value
 from ngen_weave.config import RunSettings
 from ngen_weave.constants import REPLY_EXCERPT_CHARS
@@ -803,19 +804,32 @@ class Engine:
                         attempt = 1
                         output = await self._execute_human(cls, instance, model, ctx, config)
                     else:
-                        attempt = 0
-                        while True:
-                            attempt += 1
-                            try:
-                                output = await self._execute_leaf(
-                                    cls, path, model, ctx, usage, cell
-                                )
-                                break
-                            except (InfraError, AgentReplyError):
-                                if attempt > self.max_retries:
-                                    raise
-                                emit("node_activation", {"status": "retry", "attempt": attempt})
-                                await _sleep(self.retry_backoff_ms * 2 ** (attempt - 1) / 1000)
+                        try:
+                            output, attempt = await self._leaf_with_retries(
+                                cls, path, model, ctx, usage, cell
+                            )
+                        except ReturnToReviewError:
+                            # The gate routed a denied tool call back to human
+                            # review: park as waiting_human with the review-reason
+                            # contract and halt via interrupt(), so resume carries
+                            # Command(resume=...) through the same checkpoint. On
+                            # replay the whole node re-executes; the corrected
+                            # permission set lets the gate pass this time.
+                            emit(
+                                "node_activation",
+                                {"status": "waiting_human", "reason": "returned_to_review"},
+                            )
+                            interruption = {
+                                "node_path": ctx.node_path,
+                                "reason": "returned_to_review",
+                            }
+                            self._waiting = dict(interruption)
+                            from langgraph.types import interrupt
+
+                            interrupt(interruption)
+                            output, attempt = await self._leaf_with_retries(
+                                cls, path, model, ctx, usage, cell
+                            )
             except DataError:
                 emit("node_activation", {"status": "invalid"})
                 raise
@@ -978,6 +992,33 @@ class Engine:
             ) from None
         return validated
 
+    async def _leaf_with_retries(
+        self,
+        cls: type[Workflow],
+        path: str,
+        model: BaseModel,
+        ctx: RunContext,
+        usage: list[Usage],
+        cell: dict[str, Any],
+    ) -> tuple[BaseModel, int]:
+        """Execute one leaf under the retry policy, returning output and attempt count.
+
+        InfraError and AgentReplyError retry up to max_retries with exponential
+        backoff, each retry emitting a retry node_activation record; DataError
+        failures (including DeniedToolError) never retry. The attempt count is
+        the leaf's iterations for its ok record's metadata.
+        """
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return await self._execute_leaf(cls, path, model, ctx, usage, cell), attempt
+            except (InfraError, AgentReplyError):
+                if attempt > self.max_retries:
+                    raise
+                ctx.emit("node_activation", {"status": "retry", "attempt": attempt})
+                await _sleep(self.retry_backoff_ms * 2 ** (attempt - 1) / 1000)
+
     async def _execute_leaf(
         self,
         cls: type[Workflow],
@@ -1082,8 +1123,12 @@ class Engine:
         (local YAML form); both carry identical payloads. The response is
         validated before anything moves, an artifact_write record captures
         its hash, and the interrupted superstep continues under the same
-        checkpoint namespace. A paused run (budget breach) drives with a None
-        seed on the SAME namespace: limits live in engine settings rebuilt per
+        checkpoint namespace. A waiting whose latest record carries reason
+        "returned_to_review" (a permission gate's return_to_review policy)
+        has no human slots to validate; the optional payload rides along and
+        the interrupted leaf replays under its corrected permissions. A
+        paused run (budget breach) drives with a None seed on the SAME
+        namespace: limits live in engine settings rebuilt per
         invocation, so raising the cap takes effect without any payload. A
         failed or otherwise stopped run re-executes from the top under a fresh
         namespace, seeded with its stored input.
@@ -1102,6 +1147,15 @@ class Engine:
             )
         if run_file.status == "waiting_human":
             node_path, info = self._latest_waiting(run_file)
+            if info.get("reason") == "returned_to_review":
+                # A return_to_review pause parks at an AgentNode's interrupt;
+                # there are no human slots to validate, so the payload (the
+                # operator's optional review verdict) rides along unused and
+                # the resumed superstep replays the guarded leaf. The gate
+                # re-checks whatever permission set the class now carries.
+                return await self._drive(
+                    compiled, None, run_id, resume_payload=payload or {"reviewed": True}
+                )
             human_key = max(
                 (k for k in compiled.humans if node_path == k or node_path.endswith("." + k)),
                 key=len,

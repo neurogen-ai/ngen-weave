@@ -326,6 +326,25 @@ def _instantiate(cls: type[Workflow]) -> Workflow:
         ) from exc
 
 
+def _check_agent_node(cls: type[Workflow], path: str) -> None:
+    """Concrete AgentNode subclasses must declare a permissions PermissionSet.
+
+    The import is function-local so workflow stays importable without the agent
+    package; by the time any Workflow subclass exists, ngen_weave.workflow is
+    fully loaded, so this cannot cycle.
+    """
+    from ngen_weave.agent.node import AgentNode
+    from ngen_weave.agent.permissions import PermissionSet
+
+    if issubclass(cls, AgentNode) and not isinstance(
+        getattr(cls, "permissions", None), PermissionSet
+    ):
+        raise ConfigError(
+            f"{path}: AgentNode requires a permissions ClassVar[PermissionSet]; "
+            "its tool use is otherwise ungated"
+        )
+
+
 def _check_declarations(cls: type[Workflow]) -> None:
     path = workflow_class_path(cls)
     _check_type_attrs(cls, path)
@@ -337,6 +356,7 @@ def _check_declarations(cls: type[Workflow]) -> None:
         _check_human_state(cls, path)
     _check_prompt_and_artifacts(cls, path)
     _check_observations(cls, path)
+    _check_agent_node(cls, path)
     if not (getattr(cls, "collect_order", None) is None or isinstance(cls.collect_order, str)):
         raise ConfigError(f"{path}: collect_order must be None or a dotted path string")
 
