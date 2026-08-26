@@ -285,7 +285,15 @@ async def test_model_mode_control_parses_boolean_reply(tmp_path):
     assert model_calls[0].payload["variant"] == "default"
 
 
-async def test_invalid_worker_output_fails_without_retry(tmp_path):
+async def test_invalid_worker_output_retries_then_fails(tmp_path, monkeypatch):
+    import ngen_weave.engine.runner as runner_module
+
+    delays: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(runner_module, "_sleep", fake_sleep)
     w1 = make_worker("W1", Root, Piece)
     chain = make_chain([w1], Root, Piece)
     engine, _ = make_engine(["total garbage"], tmp_path)
@@ -295,10 +303,10 @@ async def test_invalid_worker_output_fails_without_retry(tmp_path):
     assert result.status == "failed"
     assert result.output is None
     rf = engine.store.load(result.run_id)
-    assert rf.error is not None and rf.error["type"] == "DataError"
+    assert rf.error is not None and rf.error["type"] == "AgentReplyError"
     statuses = [r.payload.get("status") for r in rf.records if r.kind == "node_activation"]
-    assert "retry" not in statuses
-    assert "invalid" in statuses
+    assert statuses.count("retry") == engine.max_retries
+    assert "invalid" not in statuses  # AgentReplyError bypasses the invalid branch
 
 
 async def test_unmapped_router_label_is_data_error(tmp_path):
@@ -925,3 +933,105 @@ class TestCompileCacheKey:
         first = engine.compile(chain, models)
         second = engine.compile(chain, models)
         assert first is second
+
+
+class TestAgentReplyRetries:
+    """Schema-invalid model replies retry, then fail with a friendly report.
+
+    Pins the two validation regimes: agent replies get max_retries attempts,
+    user payloads abort once (CLI side in test_cli.py), and ProviderError
+    stays non-retryable inside the leaf loop.
+    """
+
+    @staticmethod
+    def _patch_sleep(monkeypatch):
+        import ngen_weave.engine.runner as runner_module
+
+        delays: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            delays.append(seconds)
+
+        monkeypatch.setattr(runner_module, "_sleep", fake_sleep)
+        return delays
+
+    async def test_prose_forever_fails_after_retries_with_field_report(self, tmp_path, monkeypatch):
+        delays = self._patch_sleep(monkeypatch)
+        w1 = make_worker("ProseW", Root, Piece)
+        chain = make_chain([w1], Root, Piece)
+        provider = FakeProvider(["just some prose, no json here"])
+        engine = Engine(provider, RunStore(tmp_path / "runs"), checkpointer="memory")
+        engine.max_retries = 3
+
+        result = await engine.run(chain, Root(text="hi"))
+
+        assert result.status == "failed"
+        rf = engine.store.load(result.run_id)
+        assert rf.error is not None and rf.error["type"] == "AgentReplyError"
+        message = rf.error["message"]
+        assert "Piece:" in message  # model name heads the field report
+        assert "  - " in message  # field line from the formatter
+        assert "last reply:" in message
+        # one backoff per retry after the initial attempt
+        assert len(delays) == engine.max_retries
+
+    async def test_valid_reply_on_second_call_completes_with_two_iterations(
+        self, tmp_path, monkeypatch
+    ):
+        self._patch_sleep(monkeypatch)
+        w1 = make_worker("SecondTryW", Root, Piece)
+        chain = make_chain([w1], Root, Piece)
+        provider = FakeProvider(["nope", '{"text":"recovered"}'])
+        engine = Engine(provider, RunStore(tmp_path / "runs"), checkpointer="memory")
+
+        result = await engine.run(chain, Root(text="hi"))
+
+        assert result.status == "completed"
+        rf = engine.store.load(result.run_id)
+        activation = next(
+            r for r in rf.records if r.kind == "node_activation" and r.payload.get("status") == "ok"
+        )
+        assert activation.payload["metadata"]["iterations"] == 2
+
+    async def test_unparseable_control_reply_retries_then_fails(self, tmp_path, monkeypatch):
+        delays = self._patch_sleep(monkeypatch)
+        chain, _gate = make_control_chain(prompt="is {text} acceptable?")
+        provider = FakeProvider(["the committee has deliberated at length"])
+        engine = Engine(provider, RunStore(tmp_path / "runs"), checkpointer="memory")
+        engine.max_retries = 2
+
+        result = await engine.run(chain, Piece(text="hi"))
+
+        assert result.status == "failed"
+        rf = engine.store.load(result.run_id)
+        assert rf.error is not None and rf.error["type"] == "AgentReplyError"
+        message = rf.error["message"]
+        assert "not a parseable boolean verdict" in message
+        assert "last reply:" in message
+        assert len(delays) == engine.max_retries
+
+    async def test_provider_error_is_not_retried(self, tmp_path, monkeypatch):
+        from ngen_weave.errors import ProviderError
+
+        delays = self._patch_sleep(monkeypatch)
+
+        class BoomProvider(FakeProvider):
+            async def complete(self, messages, *, variant=None):
+                raise ProviderError("model call failed for variant 'default': boom")
+
+        w1 = make_worker("BoomW", Root, Piece)
+        chain = make_chain([w1], Root, Piece)
+        engine = Engine(BoomProvider(), RunStore(tmp_path / "runs"), checkpointer="memory")
+
+        result = await engine.run(chain, Root(text="hi"))
+
+        assert result.status == "failed"
+        assert len(delays) == 0
+        rf = engine.store.load(result.run_id)
+        assert rf.error is not None and rf.error["type"] == "ProviderError"
+        retries = [
+            r
+            for r in rf.records
+            if r.kind == "node_activation" and r.payload.get("status") == "retry"
+        ]
+        assert retries == []  # ProviderError never enters the backoff path

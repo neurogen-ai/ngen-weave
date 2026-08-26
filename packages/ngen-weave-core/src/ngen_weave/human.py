@@ -20,6 +20,7 @@ from typing import Any, Literal, get_args, get_origin
 from pydantic import BaseModel, ValidationError
 
 from ngen_weave.errors import ConfigError, DataError
+from ngen_weave.schema_errors import format_validation_error
 
 _PRIMITIVES = (str, int, float, bool)
 
@@ -84,8 +85,6 @@ def validate_completion(state_type: type[BaseModel], response: dict) -> BaseMode
     try:
         return state_type.model_validate(response)
     except ValidationError as exc:
-        missing = sorted({str(e["loc"][0]) for e in exc.errors() if e["type"] == "missing"})
-        detail = f"; missing required fields {missing}" if missing else ""
         raise DataError(
-            f"review response does not match {state_type.__name__}: {exc}{detail}"
+            f"review response does not match {format_validation_error(state_type, exc)}"
         ) from None
