@@ -31,23 +31,14 @@ $ uv pip install -e examples/code_review
 ```
 
 The package registers its workflow module under the `ngen-weave.workflows`
-entry-point group, which is how discovery finds it. The example directory also
-ships a project manifest, `examples/code_review/ngen-weave.json`, listing the
-same module. Discovery fails loudly on duplicate class paths across sources,
-so once the package is installed, remove or rename that manifest before
-running from inside `examples/code_review`:
+entry-point group, which is how discovery finds it.
 
-```console
-$ mv examples/code_review/ngen-weave.json examples/code_review/ngen-weave.json.disabled
-```
-
-The remaining steps run from `examples/code_review`, where `ngw.yaml`,
-`models.json`, and `request.json` live.
+All remaining commands run from the repository root.
 
 ### 2. Validate the config
 
 ```console
-$ uv run ngen-weave validate ngw.yaml
+$ uv run ngen-weave validate examples/code_review/ngw.yaml
 ok: CodeReview (ngw.yaml)
 ```
 
@@ -57,25 +48,28 @@ bindings, schemas, and graph structure at import time.
 ### 3. Run the workflow
 
 ```console
-$ uv run ngen-weave run code_review.workflows.CodeReview -i request.json -c ngw.yaml --project demo
-```
-
-`request.json` carries the diff under review:
-
-```json
-{
-    "diff": "--- a/app.py\n+++ b/app.py\n@@ -1,3 +1,4 @@\n def greet(name):\n-    return \"hello\"\n+    return f\"hello, {name}\"\n"
-}
+$ uv run ngen-weave run code_review.workflows.CodeReview \
+    -i examples/code_review/request.json \
+    -c examples/code_review/ngw.yaml \
+    --project demo
 ```
 
 The config binds the workflow's model calls to the `example-model` variant in
-`models.json`, an `openai/gpt-4o-mini` endpoint, so provider credentials (for
-example `OPENAI_API_KEY`) must be set in the environment. The gate approves
-any non-empty review, so a normal run prints `status completed` right away.
-The human review step only triggers when the gate rejects an empty draft; if
-the process dies mid-run for any other reason, the same `resume` command
-continues from the last checkpoint. Note the printed run id for the next two
-steps.
+`examples/code_review/models.json`. By default that variant points at a local
+llama.cpp server (`http://localhost:8080/v1`); start one with a model of your
+choice:
+
+```console
+$ llama-server -m <model.gguf> --port 8080
+```
+
+To use a cloud provider instead, set the variant's `model` (for example
+`openai/gpt-4o-mini`) and export the matching credentials (`OPENAI_API_KEY`).
+The gate approves any non-empty review, so a normal run prints `status
+completed` right away. The human review step only triggers when the gate
+rejects an empty draft; if the process dies mid-run for any other reason, the
+same `resume` command continues from the last checkpoint. Note the printed
+run id for the next two steps.
 
 ### 4. Resume with the human decision
 
