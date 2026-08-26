@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
-from ngen_weave.errors import ConfigError, DataError, InfraError
+from ngen_weave.errors import ConfigError, DataError, InfraError, ProviderError
 from ngen_weave.models.registry import LiteLLMProvider, ModelRegistry
 
 MODELS = {
@@ -156,3 +157,54 @@ class TestLiteLLMProviderTranslation:
         provider = LiteLLMProvider(ModelRegistry.load(models_file))
         done = await provider.complete([], variant="sonnet")
         assert done.cost_usd == 0.0
+
+
+class TestPermanentFailureClassification:
+    """Permanent provider failures abort on the first attempt as ProviderError.
+
+    No network and no @pytest.mark.live marker: acompletion is stubbed to
+    raise the litellm exception type directly.
+    """
+
+    async def _complete_raising(self, models_file: Path, monkeypatch, exc: Exception):
+        import litellm
+
+        async def boom(**_):
+            raise exc
+
+        monkeypatch.setattr(litellm, "acompletion", boom)
+        provider = LiteLLMProvider(ModelRegistry.load(models_file))
+        return await provider.complete([], variant="sonnet")
+
+    async def test_authentication_error_is_provider_error(
+        self, models_file: Path, monkeypatch
+    ) -> None:
+        import litellm.exceptions
+
+        exc = litellm.exceptions.AuthenticationError("bad key", "openai", "test/sonnet")
+        with pytest.raises(ProviderError) as info:
+            await self._complete_raising(models_file, monkeypatch, exc)
+        assert "authentication rejected" in str(info.value)
+        assert "'sonnet'" in str(info.value)
+
+    @pytest.mark.parametrize(
+        "exc_type, phrase",
+        [
+            ("NotFoundError", "model or endpoint not found"),
+            ("APIConnectionError", "could not reach the provider endpoint"),
+        ],
+    )
+    async def test_permanent_errors_are_provider_errors(
+        self, models_file: Path, monkeypatch, exc_type: str, phrase: str
+    ) -> None:
+        import litellm.exceptions
+
+        exc = getattr(litellm.exceptions, exc_type)("boom", "test/sonnet", "openai")
+        with pytest.raises(ProviderError, match=re.escape(phrase)):
+            await self._complete_raising(models_file, monkeypatch, exc)
+
+    async def test_generic_runtime_error_still_infra_error(
+        self, models_file: Path, monkeypatch
+    ) -> None:
+        with pytest.raises(InfraError, match="connection reset"):
+            await self._complete_raising(models_file, monkeypatch, RuntimeError("connection reset"))
