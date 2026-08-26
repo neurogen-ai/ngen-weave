@@ -330,10 +330,7 @@ def _check_declarations(cls: type[Workflow]) -> None:
     if issubclass(cls, Human):
         _check_human_state(cls, path)
     _check_prompt_and_artifacts(cls, path)
-    if not (
-        getattr(cls, "collect_order", None) is None
-        or isinstance(cls.collect_order, str)
-    ):
+    if not (getattr(cls, "collect_order", None) is None or isinstance(cls.collect_order, str)):
         raise ConfigError(f"{path}: collect_order must be None or a dotted path string")
 
 
