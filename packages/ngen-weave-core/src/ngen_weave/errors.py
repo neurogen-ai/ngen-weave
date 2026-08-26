@@ -22,6 +22,18 @@ class DataError(NgWeaveError):
     """
 
 
+class ProviderError(ConfigError):
+    """Deterministic provider failure: auth rejected, unknown model or
+    endpoint, unreachable host. Raised once at the completion boundary;
+    retrying cannot help. The message names the variant and the fix."""
+
+
+class AgentReplyError(NgWeaveError):
+    """A model reply that fails its output schema. Retryable: one malformed
+    sample must not kill a run when a re-ask may succeed. The message carries
+    the schema violations and a truncated reply so exhaustion is diagnosable."""
+
+
 class InfraError(NgWeaveError):
     """Transport or API failure, such as timeouts and provider outages.
 

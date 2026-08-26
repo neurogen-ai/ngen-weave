@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
-from ngen_weave.errors import ConfigError, DataError, InfraError
+from ngen_weave.errors import ConfigError, DataError, InfraError, ProviderError
 from ngen_weave.models.registry import LiteLLMProvider, ModelRegistry
 
 MODELS = {
@@ -70,6 +71,51 @@ class TestModelRegistry:
     ) -> None:
         with pytest.raises(ConfigError, match=message):
             ModelRegistry(data, tmp_path / "models.json")
+
+    def _registry(self, tmp_path: Path, variants: dict) -> ModelRegistry:
+        data = {"defaultVariant": "local", "variants": {"local": variants}}
+        return ModelRegistry(data, tmp_path / "models.json")
+
+    def test_api_key_composes_litellm_prefix(self, tmp_path: Path) -> None:
+        kwargs = self._registry(
+            tmp_path,
+            {
+                "model": "qwen3:8b",
+                "api": "openai-compatible",
+                "api_base": "http://localhost:8080/v1",
+            },
+        ).kwargs()
+        assert kwargs["model"] == "openai/qwen3:8b"
+        assert "api" not in kwargs
+
+    def test_api_key_with_prefixed_model_passes_through(self, tmp_path: Path) -> None:
+        kwargs = self._registry(
+            tmp_path, {"model": "openai/qwen3:8b", "api": "openai-compatible"}
+        ).kwargs()
+        assert kwargs["model"] == "openai/qwen3:8b"
+
+    def test_legacy_prefixed_model_without_api_is_unchanged(self, models_file: Path) -> None:
+        assert ModelRegistry.load(models_file).kwargs("haiku") == {"model": "test/haiku"}
+
+    def test_unknown_api_value_is_config_error(self, tmp_path: Path) -> None:
+        with pytest.raises(
+            ConfigError, match="variant 'local' has unknown api 'ollama'"
+        ) as excinfo:
+            self._registry(tmp_path, {"model": "m", "api": "ollama"})
+        assert "accepted values" in str(excinfo.value)
+
+    def test_api_prefixes_local_gguf_name(self, tmp_path: Path) -> None:
+        kwargs = self._registry(
+            tmp_path,
+            {
+                "model": "ggml-org/GLM-4.7-Flash-GGUF:Q8_0",
+                "api": "openai-compatible",
+                "api_base": "http://localhost:8080/v1",
+                "api_key": "dummy",
+            },
+        ).kwargs()
+        assert kwargs["model"] == "openai/ggml-org/GLM-4.7-Flash-GGUF:Q8_0"
+        assert "api" not in kwargs
 
 
 def _fake_response(content="hello", prompt=11, total=33):
@@ -156,3 +202,54 @@ class TestLiteLLMProviderTranslation:
         provider = LiteLLMProvider(ModelRegistry.load(models_file))
         done = await provider.complete([], variant="sonnet")
         assert done.cost_usd == 0.0
+
+
+class TestPermanentFailureClassification:
+    """Permanent provider failures abort on the first attempt as ProviderError.
+
+    No network and no @pytest.mark.live marker: acompletion is stubbed to
+    raise the litellm exception type directly.
+    """
+
+    async def _complete_raising(self, models_file: Path, monkeypatch, exc: Exception):
+        import litellm
+
+        async def boom(**_):
+            raise exc
+
+        monkeypatch.setattr(litellm, "acompletion", boom)
+        provider = LiteLLMProvider(ModelRegistry.load(models_file))
+        return await provider.complete([], variant="sonnet")
+
+    async def test_authentication_error_is_provider_error(
+        self, models_file: Path, monkeypatch
+    ) -> None:
+        import litellm.exceptions
+
+        exc = litellm.exceptions.AuthenticationError("bad key", "openai", "test/sonnet")
+        with pytest.raises(ProviderError) as info:
+            await self._complete_raising(models_file, monkeypatch, exc)
+        assert "authentication rejected" in str(info.value)
+        assert "'sonnet'" in str(info.value)
+
+    @pytest.mark.parametrize(
+        "exc_type, phrase",
+        [
+            ("NotFoundError", "model or endpoint not found"),
+            ("APIConnectionError", "could not reach the provider endpoint"),
+        ],
+    )
+    async def test_permanent_errors_are_provider_errors(
+        self, models_file: Path, monkeypatch, exc_type: str, phrase: str
+    ) -> None:
+        import litellm.exceptions
+
+        exc = getattr(litellm.exceptions, exc_type)("boom", "test/sonnet", "openai")
+        with pytest.raises(ProviderError, match=re.escape(phrase)):
+            await self._complete_raising(models_file, monkeypatch, exc)
+
+    async def test_generic_runtime_error_still_infra_error(
+        self, models_file: Path, monkeypatch
+    ) -> None:
+        with pytest.raises(InfraError, match="connection reset"):
+            await self._complete_raising(models_file, monkeypatch, RuntimeError("connection reset"))
