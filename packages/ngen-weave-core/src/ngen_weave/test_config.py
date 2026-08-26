@@ -145,3 +145,83 @@ def test_bindings_without_models_file_fail(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigError, match="models.json not found"):
         load_config(cfg_path, registry_all())
+
+
+# --- run.budget parsing -------------------------------------------------------
+
+
+def test_budget_cost_usd_parses(env: Path) -> None:
+    cfg_path = write_config(
+        env, "ngw.yaml", f"workflow: {Probe.__module__}.Probe\nrun:\n  budget:\n    cost_usd: 1.5\n"
+    )
+    cfg = load_config(cfg_path, registry_all())
+    assert cfg.run.budget is not None
+    assert cfg.run.budget.cost_usd == 1.5
+    assert cfg.run.budget.steps is None
+
+
+def test_budget_steps_parses_as_int(env: Path) -> None:
+    cfg_path = write_config(
+        env, "ngw.yaml", f"workflow: {Probe.__module__}.Probe\nrun:\n  budget:\n    steps: 10\n"
+    )
+    cfg = load_config(cfg_path, registry_all())
+    assert cfg.run.budget.steps == 10
+    assert cfg.run.budget.cost_usd is None
+
+
+def test_budget_both_fields_parse(env: Path) -> None:
+    cfg_path = write_config(
+        env,
+        "ngw.yaml",
+        f"workflow: {Probe.__module__}.Probe\nrun:\n  budget:\n    cost_usd: 2\n    steps: 5\n",
+    )
+    cfg = load_config(cfg_path, registry_all())
+    assert cfg.run.budget.cost_usd == 2.0
+    assert cfg.run.budget.steps == 5
+
+
+def test_budget_without_any_limit_fails(env: Path) -> None:
+    cfg_path = write_config(
+        env, "ngw.yaml", f"workflow: {Probe.__module__}.Probe\nrun:\n  budget: {{}}\n"
+    )
+    with pytest.raises(ConfigError, match="at least one"):
+        load_config(cfg_path, registry_all())
+
+
+def test_null_budget_is_not_valid(env: Path) -> None:
+    # run.budget present but empty means an empty mapping in YAML? No: bare
+    # "budget:" parses as None, which is not a mapping and must be rejected
+    # like any malformed config value.
+    cfg_path = write_config(
+        env, "ngw.yaml", f"workflow: {Probe.__module__}.Probe\nrun:\n  budget:\n"
+    )
+    with pytest.raises(ConfigError, match="run.budget must be a mapping"):
+        load_config(cfg_path, registry_all())
+
+
+def test_budget_unknown_key_fails(env: Path) -> None:
+    cfg_path = write_config(
+        env,
+        "ngw.yaml",
+        f"workflow: {Probe.__module__}.Probe\nrun:\n  budget:\n    tokens: 99\n",
+    )
+    with pytest.raises(ConfigError, match="unknown run.budget keys.*tokens"):
+        load_config(cfg_path, registry_all())
+
+
+@pytest.mark.parametrize("field", ["cost_usd", "steps"])
+@pytest.mark.parametrize("bad", [0, -3, True])
+def test_budget_nonpositive_values_fail(env: Path, field: str, bad) -> None:
+    cfg_path = write_config(
+        env,
+        "ngw.yaml",
+        f"workflow: {Probe.__module__}.Probe\nrun:\n  budget:\n    {field}: {json.dumps(bad)}\n",
+    )
+    with pytest.raises(ConfigError, match=field):
+        load_config(cfg_path, registry_all())
+
+
+def test_no_budget_block_yields_none(env: Path) -> None:
+    cfg_path = write_config(env, "ngw.yaml", f"workflow: {Probe.__module__}.Probe\n")
+    cfg = load_config(cfg_path, registry_all())
+    assert cfg.run.budget is None

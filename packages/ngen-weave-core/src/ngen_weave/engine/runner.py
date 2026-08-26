@@ -30,6 +30,7 @@ import operator
 import time
 from asyncio import sleep as _sleep  # engine-owned alias; tests patch this
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,8 +44,9 @@ except ImportError:  # pragma: no cover
 from pydantic import BaseModel, ValidationError
 
 from ngen_weave.artifacts import ArtifactMeta, ArtifactStore, hash_value
+from ngen_weave.config import RunSettings
 from ngen_weave.constants import REPLY_EXCERPT_CHARS
-from ngen_weave.engine.state import RunResult, RunStatus
+from ngen_weave.engine.state import RunFile, RunResult, RunStatus
 from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import (
     AgentReplyError,
@@ -99,6 +101,8 @@ class CompiledGraph:
             model-calling leaf; recorded in each model_call provenance payload.
         builder: The underlying LangGraph StateGraph; compiled per invocation
             with this graph's own checkpointer.
+        wiring: The compiled graph's node table; the streaming driver matches
+            update-event keys against it to spot committed activations.
         humans: Waiting node path -> Human class for every wired human leaf;
             resume uses it to validate submissions before continuing.
         saver: This graph's dedicated memory checkpointer; levels must not
@@ -111,10 +115,12 @@ class CompiledGraph:
         variants: dict[str, str],
         builder: Any,
         humans: dict[str, type[Workflow]] | None = None,
+        wiring: Any = None,
     ) -> None:
         self.root = root
         self.variants = variants
         self.builder = builder
+        self.wiring = wiring
         self.humans = humans or {}
         self.saver: Any = None
 
@@ -426,6 +432,8 @@ class Engine:
         max_retries: Retries after the initial attempt for InfraError only.
         retry_backoff_ms: Exponential backoff base in milliseconds; each retry
             waits twice the previous delay.
+        settings: Run-level settings carrying the run budget; limits live on
+            the engine, so resume-after-breach rebuilds it with raised caps.
     """
 
     def __init__(
@@ -437,6 +445,7 @@ class Engine:
         max_retries: int = 3,
         retry_backoff_ms: int = 1000,
         artifacts: ArtifactStore | None = None,
+        settings: RunSettings | None = None,
     ) -> None:
         if checkpointer not in {"sqlite", "memory"}:
             raise ConfigError(f"checkpointer must be 'sqlite' or 'memory', got {checkpointer!r}")
@@ -447,11 +456,96 @@ class Engine:
         self.max_retries = max_retries
         self.retry_backoff_ms = retry_backoff_ms
         self._artifacts = artifacts
+        self._settings = (
+            dataclasses.replace(
+                settings,
+                checkpointer=checkpointer,
+                db_path=db_path,
+                max_retries=max_retries,
+                retry_backoff_ms=retry_backoff_ms,
+            )
+            if settings is not None
+            else RunSettings(
+                checkpointer=checkpointer,
+                db_path=db_path,
+                max_retries=max_retries,
+                retry_backoff_ms=retry_backoff_ms,
+            )
+        )
+        self._cancel_flags: set[str] = set()  # per-run-id cancel requests
+        self._boundary_stop: dict | None = None  # outcome of the last boundary breach
+        self._breach_emitted: set[str] = set()  # runs whose budget record landed
         self._compiled: dict[tuple, CompiledGraph] = {}
         self._compiling: set[int] = set()  # ids of classes mid-compilation
         self._memory: Any = None  # root-level memory checkpointer
         self._memory_by_graph: dict[int, Any] = {}  # one saver per graph level
         self._waiting: dict | None = None  # set by the emitter on waiting_human
+
+    # --- cooperative cancellation and the activation boundary ------------------
+
+    def cancel(self, run_id: str) -> None:
+        """Request cooperative cancellation of run_id at its next boundary.
+
+        A run that is actively driven stops after its current node finishes;
+        the driver then persists status "cancelled". A paused or waiting run
+        is cancelled immediately, and cancelling an already-terminal run is a
+        no-op. Same-process only: the flag lives on this Engine instance.
+
+        Raises:
+            UnknownRunError: Unknown run id.
+        """
+        run_file = self.store.peek(run_id)
+        if run_file.status in {"completed", "failed", "cancelled"}:
+            return  # already terminal; cancelling again is a no-op
+        if run_file.status == "running":
+            self._cancel_flags.add(run_id)
+        else:
+            self.store.set_status(run_id, "cancelled")
+            self._cancel_flags.discard(run_id)
+
+    def _at_boundary(
+        self, run_file: RunFile, node_path: str, metadata: RunMetadata | None
+    ) -> bool:
+        """Return True when the driver must stop before the next activation.
+
+        Checks run in order -- cancel flag first, then budget, then observers
+        (step H2 plugs into the same call site); first breach wins, so a
+        budget breach short-circuits any observer predicate evaluated at this
+        same boundary. Budget totals come from the store's incrementally
+        maintained columns via the run file's identity, never from rescanning
+        records; cost_usd compares accumulated model-call spend and steps
+        compare node_activation counts (a breach fires when observed reaches
+        the limit). On a budget breach this emits exactly one budget_exhausted
+        record naming the crossing activation and flips _boundary_stop to a
+        paused outcome whose waiting dict carries node_path plus reason; a
+        paused run later resumes by driving with a None seed on the SAME
+        checkpoint namespace, so LangGraph schedules the next node from its
+        persisted channel state without replaying committed ones.
+        """
+        run_id = run_file.run_id
+        if run_id in self._cancel_flags:
+            self._boundary_stop = {"status": "cancelled"}
+            return True
+        budget = self._settings.budget
+        if budget is None or run_id in self._breach_emitted:
+            return False
+        cost_usd, activations = self.store.usage_totals(run_id)
+        if budget.steps is not None and activations >= budget.steps:
+            dimension, limit, observed = "steps", budget.steps, activations
+        elif budget.cost_usd is not None and cost_usd >= budget.cost_usd:
+            dimension, limit, observed = "cost_usd", budget.cost_usd, cost_usd
+        else:
+            return False
+        self._breach_emitted.add(run_id)
+        self._emitter(run_id, node_path)(
+            "budget_exhausted",
+            {"dimension": dimension, "limit": limit, "observed": observed},
+        )
+        self._boundary_stop = {
+            "status": "paused",
+            "waiting": {"node_path": node_path, "reason": "budget_exhausted"},
+        }
+        return True
 
     # --- compilation ---------------------------------------------------------
 
@@ -538,7 +632,9 @@ class Engine:
         }
 
         builder = self._build_production_graph(wiring, recorder.ops, cell)
-        compiled = CompiledGraph(root=wf, variants=variants, builder=builder, humans=humans)
+        compiled = CompiledGraph(
+            root=wf, variants=variants, builder=builder, humans=humans, wiring=wiring
+        )
         if self.checkpointer == "memory":
             from langgraph.checkpoint.memory import MemorySaver
 
@@ -898,8 +994,11 @@ class Engine:
         (local YAML form); both carry identical payloads. The response is
         validated before anything moves, an artifact_write record captures
         its hash, and the interrupted superstep continues under the same
-        checkpoint namespace. A failed or otherwise stopped run re-executes
-        from the top under a fresh namespace, seeded with its stored input.
+        checkpoint namespace. A paused run (budget breach) drives with a None
+        seed on the SAME namespace: limits live in engine settings rebuilt per
+        invocation, so raising the cap takes effect without any payload. A
+        failed or otherwise stopped run re-executes from the top under a fresh
+        namespace, seeded with its stored input.
         An explicit payload on a non-waiting run is a ConfigError.
         """
         run_file = self.store.load(run_id)
@@ -943,6 +1042,10 @@ class Engine:
             run_file.submissions[node_path] = response
             self.store.save(run_file)
             return await self._drive(compiled, None, run_id, resume_payload=response)
+        if run_file.status == "paused":
+            # Budget pause: no payload path; the None-seed drive resumes from
+            # the latest checkpoint of the existing namespace.
+            return await self._drive(compiled, None, run_id, boundary_resume=True)
         return await self._drive(compiled, {_INPUT_KEY: run_file.input}, run_id)
 
     @staticmethod
@@ -960,6 +1063,7 @@ class Engine:
         run_id: str,
         *,
         resume_payload: dict | None = None,
+        boundary_resume: bool = False,
     ) -> RunResult:
         """Invoke the graph, then write the terminal transition to the run file.
 
@@ -969,7 +1073,12 @@ class Engine:
         reports here once its whole subtree succeeded. A resume_payload drive
         continues the interrupted attempt under its existing checkpoint
         namespace instead of opening a new one; the resuming flag tells human
-        nodes to skip artifact side effects on replay.
+        nodes to skip artifact side effects on replay. The root stream is
+        consumed superstep by superstep (stream_mode="updates",
+        subgraphs=True): after every committed activation _at_boundary decides
+        whether to stop, and a stop leaves the last checkpoint sitting at the
+        boundary because that superstep completed cleanly -- a boundary resume
+        then drives with a None seed on the same namespace.
         """
         from langgraph.types import Command
 
@@ -980,11 +1089,14 @@ class Engine:
         sink: list[Usage] = []
         started = time.perf_counter()
         self._waiting = None
+        self._boundary_stop = None
+        self._breach_emitted = set()
         # Each fresh drive gets a new checkpoint namespace: LangGraph does not
         # reschedule a node that raised, so replaying the old namespace would
-        # end immediately. Interrupt resumes deliberately reuse the namespace.
+        # end immediately. Interrupt resumes deliberately reuse the namespace,
+        # and so do boundary (paused/cancelled) resumes: attempt-<n> stays put.
         run_file = self.store.load(run_id)
-        if resume_payload is None:
+        if resume_payload is None and not boundary_resume:
             run_file.attempts += 1
             self.store.save(run_file)
         attempt_ns = f"attempt-{run_file.attempts}"
@@ -992,7 +1104,7 @@ class Engine:
         if resume_payload is not None:
             invoke_seed = Command(resume=resume_payload)
         try:
-            final = await self._invoke(
+            final = await self._consume_root(
                 compiled,
                 invoke_seed,
                 run_id,
@@ -1000,43 +1112,14 @@ class Engine:
                 resuming=resume_payload is not None,
                 resume_value=resume_payload,
             )
-            if self._waiting is not None:
-                status = "waiting_human"
-                waiting_info = dict(self._waiting)
-            else:
-                output_dump = _select_output(workflow_class_path(compiled.root), final)
-                compiled.root.output_type.model_validate(output_dump)
-                status = "completed"
-                sink.extend(final.get(_USAGE_KEY, ()))
+            sink.extend(final.get(_USAGE_KEY, ()))
+            status, output_dump, waiting_info = self._resolve_outcome(compiled, final)
         except Exception as exc:
             error = {"type": type(exc).__name__, "message": str(exc)}
         if status == "completed":
             # The root workflow is not a node in its own graph, so artifacts
             # it declares persist here, beside its scope's ok record.
-            root_path = workflow_class_path(compiled.root)
-            if compiled.root.artifacts and self._artifacts is not None:
-                self._write_artifacts(
-                    compiled.root,
-                    self.store.load(run_id).input,
-                    output_dump,
-                    RunContext(
-                        run_id=run_id,
-                        node_path=root_path,
-                        emit=self._emitter(run_id, root_path),
-                        provider=self.provider,
-                    ),
-                )
-            metadata = RunMetadata(
-                iterations=1,
-                tokens_in_context=sum(u[0] for u in sink),
-                tokens_total=sum(u[1] for u in sink),
-                cost_usd=sum(u[2] for u in sink),
-                elapsed_ms=int((time.perf_counter() - started) * 1000),
-                last_output_valid=True,
-            )
-            self._emitter(run_id, workflow_class_path(compiled.root))(
-                "node_activation", {"status": "ok", "metadata": dataclasses.asdict(metadata)}
-            )
+            self._emit_root_scope(compiled, run_id, output_dump or {}, started, sink)
         run_file = self.store.load(run_id)  # reload: nodes appended records meanwhile
         run_file.status = status
         run_file.error = error
@@ -1045,11 +1128,217 @@ class Engine:
         if status == "waiting_human":
             assert waiting_info is not None
             return RunResult(run_id, status, None, waiting_info)
+        if status == "paused":
+            return RunResult(run_id, status, None, waiting_info)
+        if status == "cancelled":
+            self._cancel_flags.discard(run_id)  # consumed; later drives start clean
+            return RunResult(run_id, status, None, None)
         if error is not None:
             return RunResult(run_id, status, None, None)
         return RunResult(
             run_id, status, compiled.root.output_type.model_validate(output_dump), None
         )
+
+    def _resolve_outcome(
+        self, compiled: CompiledGraph, final: dict[str, Any]
+    ) -> tuple[RunStatus, dict | None, dict | None]:
+        """Classify the consumed stream's outcome: waiting, boundary, or completed.
+
+        A human halt resolves through the emitter-side _waiting flag; a
+        boundary breach through _at_boundary's _boundary_stop outcome (cancel
+        flips to "cancelled", budget pauses carry the waiting contract with
+        them); anything else must select and validate a terminal output.
+        """
+        if self._waiting is not None:
+            return "waiting_human", None, dict(self._waiting)
+        if self._boundary_stop is not None:
+            return self._boundary_stop["status"], None, self._boundary_stop.get("waiting")
+        output_dump = _select_output(workflow_class_path(compiled.root), final)
+        compiled.root.output_type.model_validate(output_dump)
+        return "completed", output_dump, None
+
+    def _emit_root_scope(
+        self,
+        compiled: CompiledGraph,
+        run_id: str,
+        output_dump: dict,
+        started: float,
+        sink: list[Usage],
+    ) -> None:
+        """Persist root-scope artifacts and the root class path's ok record."""
+        root_path = workflow_class_path(compiled.root)
+        if compiled.root.artifacts and self._artifacts is not None:
+            self._write_artifacts(
+                compiled.root,
+                self.store.load(run_id).input,
+                output_dump,
+                RunContext(
+                    run_id=run_id,
+                    node_path=root_path,
+                    emit=self._emitter(run_id, root_path),
+                    provider=self.provider,
+                ),
+            )
+        metadata = RunMetadata(
+            iterations=1,
+            tokens_in_context=sum(u[0] for u in sink),
+            tokens_total=sum(u[1] for u in sink),
+            cost_usd=sum(u[2] for u in sink),
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            last_output_valid=True,
+        )
+        self._emitter(run_id, root_path)(
+            "node_activation", {"status": "ok", "metadata": dataclasses.asdict(metadata)}
+        )
+
+    async def _consume_root(
+        self,
+        compiled: CompiledGraph,
+        invoke_seed: Any,
+        run_id: str,
+        *,
+        checkpoint_ns: str,
+        resuming: bool,
+        resume_value: Any | None,
+    ) -> dict[str, Any]:
+        """Consume the root graph's stream until it ends or a boundary stops it.
+
+        Each qualifying update event means one or more node activations just
+        committed -- their records are already in the store, since node
+        functions append before the superstep surfaces. The stream is pinned
+        to stream_mode="updates" with subgraphs=True; langgraph consumes it
+        pull-driven, so a boundary break after a committed superstep means
+        neither that superstep's successor nor any later one ever runs --
+        the boundary lands exactly where _at_boundary decided, without
+        raising anything through the graph and without interrupt(). The
+        accumulated update dicts double as the completed-run final state;
+        when no qualifying event surfaces at all (e.g. a boundary resume
+        whose remaining work already ran inside one composite, leaving only
+        END scheduled), the checkpointer's latest snapshot supplies the
+        terminal channel state instead.
+
+        Granularity note (approved deviation): composites nest via manual
+        graph.ainvoke inside their node functions (_activate_composite), so
+        depth>=2 activations never surface in this root stream even with
+        subgraphs=True -- nested activations instead pause at the enclosing
+        composite's commit boundary. Flat graphs get exact per-activation
+        boundaries; budget totals are identical either way.
+        """
+        config = self._invocation_config(run_id, checkpoint_ns, resuming, resume_value)
+        async with self._open_graph(compiled) as graph:
+            final: dict[str, Any] = {}
+            stream = graph.astream(
+                invoke_seed, config=config, stream_mode="updates", subgraphs=True
+            )
+            try:
+                async for namespace, chunk in stream:
+                    if namespace != ():  # subgraph events cannot occur under manual nesting
+                        continue
+                    keys = set(chunk)
+                    if "__interrupt__" in keys or compiled.wiring.nodes.keys().isdisjoint(keys):
+                        continue  # halts resolve through _waiting; relay steps write nothing
+                    self._merge_update(final, chunk)
+                    last = self.store.last_node_activation(run_id)
+                    metadata = None
+                    if (
+                        last is not None
+                        and last.payload.get("status") == "ok"
+                        and isinstance(last.payload.get("metadata"), dict)
+                    ):
+                        metadata = RunMetadata(**last.payload["metadata"])
+                    header = self.store.peek(run_id)
+                    if self._at_boundary(header, last.node_path if last else "", metadata):
+                        break
+            finally:
+                await stream.aclose()
+            if not final:
+                # Nothing surfaced this consume: either nothing ran at all, an
+                # interrupt halted before any commit (waiting_human), or every
+                # remaining root node already committed behind one composite
+                # and only END stayed scheduled. Read the checkpointer's
+                # latest snapshot so these cases still classify; a genuinely
+                # broken graph errors on its own terms. Querying by bare
+                # thread id matters here: aget_state over the invocation
+                # config would carry checkpoint_ns="attempt-N" and LangGraph
+                # then resolves it as a subgraph namespace, raising "Subgraph
+                # attempt-N not found" instead of returning root state.
+                snapshot = await graph.aget_state(
+                    {"configurable": {"thread_id": f"{run_id}:{checkpoint_ns}"}}
+                )
+                return dict(snapshot.values or {})
+            return final
+
+    @staticmethod
+    def _merge_update(final: dict[str, Any], chunk: dict[str, Any]) -> None:
+        """Fold one committed superstep's updates onto the final-state accumulator.
+
+        An "updates" event maps graph node name -> that node function's return
+        dict; the return dict itself carries the channel writes (child dumps,
+        last-writer marker, usage tuples), which is what downstream consumers
+        of the accumulated state read.
+        """
+        for writes in chunk.values():
+            if not isinstance(writes, dict):
+                continue
+            for key, value in writes.items():
+                if key == _USAGE_KEY:
+                    final[key] = [*final.get(key, ()), *value]
+                else:
+                    final[key] = value
+
+    def _invocation_config(
+        self,
+        run_id: str,
+        checkpoint_ns: str,
+        resuming: bool,
+        resume_value: Any,
+    ) -> dict:
+        """Build the LangGraph configurable shared by invoke and stream paths.
+
+        checkpoint_ns isolates drive attempts and nested activations under the
+        same run id. langgraph ignores a caller-supplied checkpoint_ns at
+        top-level invocation, so the root graph threads on the raw run id;
+        nested graphs derive a deterministic thread id from the attempt number
+        plus full node path, which a resumed run regenerates exactly.
+        """
+        thread_id = f"{run_id}:{checkpoint_ns}" if checkpoint_ns else run_id
+        return {
+            "configurable": {
+                "thread_id": thread_id,
+                "ngen_run_id": run_id,
+                "checkpoint_ns": checkpoint_ns,
+                "resuming": resuming,
+                "ngen_resume_value": resume_value,
+                "run_attempt": int(checkpoint_ns.split(":")[0].split("-")[1])
+                if checkpoint_ns
+                else 1,
+            }
+        }
+
+    @asynccontextmanager
+    async def _open_graph(self, compiled: CompiledGraph):
+        """Compile per-invocation graph under this level's checkpointer.
+
+        The memory branch keeps one dedicated saver per compiled graph level;
+        levels must never share one or interrupt resume becomes a no-op. The
+        sqlite branch opens its connection per invocation via the saver's own
+        context manager.
+        """
+        if self.checkpointer == "memory":
+            saver = compiled.saver
+            if saver is None:
+                from langgraph.checkpoint.memory import MemorySaver
+
+                saver = self._memory  # root graph compiled before this assignment
+                if saver is None:
+                    saver = self._memory = MemorySaver()
+                    compiled.saver = saver
+            yield compiled.builder.compile(checkpointer=saver)
+            return
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        async with AsyncSqliteSaver.from_conn_string(str(self.db_path)) as saver:
+            yield compiled.builder.compile(checkpointer=saver)
 
     async def _invoke(
         self,
@@ -1064,46 +1353,18 @@ class Engine:
     ) -> dict:
         """Invoke the builder's graph under the run's checkpoint thread.
 
-        checkpoint_ns isolates drive attempts and nested activations under
-        the same run id; the root graph of the first attempt uses the empty
-        namespace's attempt prefix set by _drive. Nested graphs get their own
-        thread id derived from the run id and namespace: langgraph ignores a
-        caller-supplied checkpoint_ns at top-level invocation, so levels
-        sharing one raw thread id would interleave checkpoints in a single
-        chain and a depth-2 interrupt would resume against the child graph's
-        state. The derived id is deterministic (attempt number plus full node
-        path), so a resumed run regenerates it exactly. resuming marks an
-        interrupt continuation so human nodes skip artifact side effects on
-        replay; resume_value carries the submitted response down into nested
-        graphs. Usage totals travel back through the graph's accumulated
-        state channel, never through config.
+        This plain ainvoke path serves composite nesting: the driver no longer
+        consumes it -- _drive streams the root graph itself. Nested graphs get
+        their own thread id derived from the run id and namespace (see
+        _invocation_config), which is what lets a depth-2 interrupt resume
+        against the child graph's state. resuming marks an interrupt
+        continuation so human nodes skip artifact side effects on replay;
+        resume_value carries the submitted response down into nested graphs.
+        Usage totals travel back through the graph's accumulated state channel,
+        never through config.
         """
         thread_id = f"{run_id}:{checkpoint_ns}" if nested else run_id
-        config = {
-            "configurable": {
-                "thread_id": thread_id,
-                "ngen_run_id": run_id,
-                "checkpoint_ns": checkpoint_ns,
-                "resuming": resuming,
-                "ngen_resume_value": resume_value,
-                "run_attempt": int(checkpoint_ns.split(":")[0].split("-")[1])
-                if checkpoint_ns
-                else 1,
-            }
-        }
-        if self.checkpointer == "memory":
-            saver = compiled.saver
-            if saver is None:
-                from langgraph.checkpoint.memory import MemorySaver
-
-                saver = self._memory  # root graph compiled before this assignment
-                if saver is None:
-                    saver = self._memory = MemorySaver()
-                    compiled.saver = saver
-            graph = compiled.builder.compile(checkpointer=saver)
-            return await graph.ainvoke(seed, config=config)
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
-        async with AsyncSqliteSaver.from_conn_string(str(self.db_path)) as saver:
-            graph = compiled.builder.compile(checkpointer=saver)
+        config = self._invocation_config(run_id, checkpoint_ns, resuming, resume_value)
+        config["configurable"]["thread_id"] = thread_id
+        async with self._open_graph(compiled) as graph:
             return await graph.ainvoke(seed, config=config)
