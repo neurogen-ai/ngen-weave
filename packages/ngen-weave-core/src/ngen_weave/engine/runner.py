@@ -150,17 +150,30 @@ def parse_boolean(reply: str, node_path: str) -> bool:
     raise DataError(f"{node_path}: model reply {reply!r} is not a parseable boolean verdict")
 
 
+def _strip_code_fence(text: str) -> str:
+    """Remove one wrapping markdown code fence, a common real-model habit."""
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return text
+    lines = stripped.splitlines()[1:]  # drop the opening ```/```json line
+    if lines and lines[-1].strip().endswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
 def parse_output(output_type: type[BaseModel], text: str, node_path: str) -> BaseModel:
     """Validate a worker reply against its output schema.
 
-    Object-shaped schemas parse from JSON first; on failure the raw text is
-    validated directly, so single-value outputs work too.
+    A wrapping markdown code fence is stripped first; object-shaped schemas
+    then parse from JSON, falling back to direct validation so single-value
+    outputs work too.
     """
+    candidate = _strip_code_fence(text)
     try:
         try:
-            return output_type.model_validate_json(text)
+            return output_type.model_validate_json(candidate)
         except ValidationError:
-            return output_type.model_validate(text)
+            return output_type.model_validate(candidate)
     except ValidationError as exc:
         raise DataError(
             f"{node_path}: output does not match {output_type.__name__}: {exc}"

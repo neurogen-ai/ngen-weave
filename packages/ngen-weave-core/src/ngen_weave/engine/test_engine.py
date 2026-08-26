@@ -597,6 +597,22 @@ def make_review_flow(h, branches, in_t=Root, out_t=Final, name="Flow"):
     return wf
 
 
+def test_parse_output_strips_markdown_code_fence():
+    """Real models habitually fence JSON; the parser tolerates one wrapper."""
+    from pydantic import BaseModel
+
+    from ngen_weave.engine.runner import parse_output
+
+    class Out(BaseModel):
+        text: str
+
+    fenced = '```json\n{"text": "hi"}\n```'
+    parsed = parse_output(Out, fenced, "p")
+    assert parsed.text == "hi"
+    # Unfenced JSON and bare values keep working.
+    assert parse_output(Out, '{"text": "hi"}', "p").text == "hi"
+
+
 async def test_human_run_writes_artifact_and_waits(tmp_path):
     import yaml
 
