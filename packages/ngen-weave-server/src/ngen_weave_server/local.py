@@ -78,8 +78,16 @@ class LocalRunService:
         self.engine.cancel(run_id)
 
     async def list_runs(self, filters: RunFilters | None = None) -> list[RunSummary]:
-        """Summaries of every stored run, filtered by the given fields."""
-        found = summaries(self.store.list())
+        """Summaries of every stored run, filtered by the given fields.
+
+        Summaries project over fully loaded run files per the B2 contract:
+        header rows carry no records, so cost_usd would always read zero
+        without loading each stream whole. The O(records) listing cost is
+        documented and accepted until profiling complains.
+        """
+        found = summaries(
+            self.store.load(header.run_id) for header in self.store.list()
+        )
         if filters is not None:
             found = [summary for summary in found if filters.matches(summary)]
         return found

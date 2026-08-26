@@ -12,6 +12,7 @@ from ngen_weave.config import ResolvedConfig
 from ngen_weave.models.provider import CompletionProvider
 from ngen_weave.wiring import (
     LazyProvider,
+    build_service,
     build_stack,
     merged_registry,
     reset_merged_registry,
@@ -25,6 +26,7 @@ __all__ = [
     "LazyProvider",
     "NGEN_WEAVE_DIR",
     "_build_engine",
+    "build_service",
     "default_provider",
     "merged_registry",
     "reset_merged_registry",

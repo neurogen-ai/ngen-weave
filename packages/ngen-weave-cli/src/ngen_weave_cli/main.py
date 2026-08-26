@@ -9,15 +9,16 @@ from pathlib import Path
 import typer
 from ngen_weave.config import load_config
 from ngen_weave.discovery import discover
+from ngen_weave.engine.state import RunFile
 from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import ConfigError, DataError, NgWeaveError
 from ngen_weave.export import dump_run_json
 from ngen_weave.schema_errors import format_validation_error
-from ngen_weave.service import UnknownRunError
+from ngen_weave.service import RunFilters, RunService, UnknownRunError
 from ngen_weave.workflow import Workflow
 from pydantic import ValidationError
 
-from .context import NGEN_WEAVE_DIR, _build_engine, merged_registry
+from .context import NGEN_WEAVE_DIR, _build_engine, build_service, merged_registry
 
 
 def _print_version(value: bool) -> None:
@@ -180,6 +181,106 @@ def status(run_id: str = typer.Argument(help="Run id to inspect.")) -> None:
         if record.kind == "model_call"
     )
     typer.echo(f"cost_usd {cost:.6f}")
+
+
+def _http_service(url: str) -> RunService:
+    """Open an HttpRunService against a remote backend.
+
+    The server package imports lazily so stdio-only or CLI-only installs never
+    pull FastAPI; the module attribute is resolved at call time so tests can
+    monkeypatch HttpRunService with a transport-injecting stand-in.
+    """
+    try:
+        from ngen_weave_server.client import HttpRunService
+    except ImportError as exc:  # pragma: no cover - exercised only without extras
+        raise ConfigError(
+            "--url requires the ngen-weave-server package; install it or ngen-weave[server]"
+        ) from exc
+    return HttpRunService(url)
+
+
+def _resolve_run_service(url: str | None) -> RunService:
+    """Build the RunService behind the management verbs.
+
+    Without --url the local stack wires in-process through the usual config
+    resolution; --url points at a remote HTTP backend. One command surface,
+    either service.
+    """
+    if url is None:
+        return build_service()
+    return _http_service(url)
+
+
+def _run_result(coro_fn, *args):
+    """Await one RunService call on fresh config resolution; errors propagate."""
+    return asyncio.run(coro_fn(*args))
+
+
+@app.command()
+def workflows() -> None:
+    """List every registered workflow with its person-facing description."""
+    try:
+        registry_map = merged_registry()
+    except NgWeaveError as exc:
+        _fail(exc)
+    for path in sorted(registry_map):
+        line = f"{path}\t{registry_map[path].human_description}".rstrip()
+        typer.echo(line)
+
+
+@app.command("runs")
+def list_runs_command(
+    workflow: str | None = typer.Option(None, "--workflow", help="Filter by workflow class path."),
+    status_filter: str | None = typer.Option(None, "--status", help="Filter by run status."),
+    url: str | None = typer.Option(None, "--url", help="Base URL of a remote ngen-weave server."),
+) -> None:
+    """List runs: id, workflow, status, cost, start time, waiting flag."""
+    try:
+        service = _resolve_run_service(url)
+        filters = RunFilters(workflow=workflow, status=status_filter)
+        found = asyncio.run(service.list_runs(filters))
+    except (NgWeaveError, UnknownRunError) as exc:
+        _fail(exc)
+    for summary in found:
+        flag = "waiting-human" if summary.waiting_on_human else "-"
+        typer.echo(
+            f"{summary.run_id}  {summary.workflow}  {summary.status}  "
+            f"{summary.cost_usd:.6f}  {summary.started_at}  {flag}"
+        )
+
+
+@app.command()
+def cancel(
+    run_id: str = typer.Argument(help="Run id to cancel."),
+    url: str | None = typer.Option(None, "--url", help="Base URL of a remote ngen-weave server."),
+) -> None:
+    """Request cancellation at the next boundary; print the resulting status."""
+    try:
+        service = _resolve_run_service(url)
+        run_file = _run_result(_cancel_then_status, service, run_id)
+    except (NgWeaveError, UnknownRunError) as exc:
+        _fail(exc)
+    typer.echo(f"status {run_file.status}")
+
+
+async def _cancel_then_status(service: RunService, run_id: str) -> RunFile:
+    """Cancel the run once, then read back its resulting status."""
+    await service.cancel(run_id)
+    return await service.status(run_id)
+
+
+@app.command()
+def note(
+    run_id: str = typer.Argument(help="Run id to annotate."),
+    text: str = typer.Argument(help="Free-text note attached to the run."),
+    url: str | None = typer.Option(None, "--url", help="Base URL of a remote ngen-weave server."),
+) -> None:
+    """Attach a free-text note to a run through the RunService."""
+    try:
+        service = _resolve_run_service(url)
+        _run_result(service.attach_note, run_id, text)
+    except (NgWeaveError, UnknownRunError) as exc:
+        _fail(exc)
 
 
 @app.command("export-run")

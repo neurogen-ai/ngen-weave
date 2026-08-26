@@ -59,7 +59,10 @@ def create_http_app(
         async with session_manager.run():
             yield
 
-    return Starlette(lifespan=lifespan, routes=[Mount("/mcp", app=_SessionEndpoint(session_manager))])
+    return Starlette(
+        lifespan=lifespan,
+        routes=[Mount("/mcp", app=_SessionEndpoint(session_manager))],
+    )
 
 
 class _SessionEndpoint:

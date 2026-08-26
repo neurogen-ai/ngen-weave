@@ -92,11 +92,11 @@ async def test_http_run_completes_via_tool_call(
     monkeypatch.setenv("NGEN_WEAVE_FAKE_PROVIDER", "1")
     monkeypatch.setenv("NGEN_WEAVE_FAKE_REPLIES", str(replies))
 
-    async with running_server(example_project) as url:
-        async with (
-            streamable_http_client(url) as (read_stream, write_stream),
-            ClientSession(read_stream, write_stream) as session,
-        ):
+    async with (
+        running_server(example_project) as url,
+        streamable_http_client(url) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
             await session.initialize()
             listing = await session.list_tools()
             by_name = {t.name: t for t in listing.tools}
@@ -132,11 +132,11 @@ async def test_http_human_pause_returns_run_id_then_resumes(
     monkeypatch.setenv("NGEN_WEAVE_FAKE_PROVIDER", "1")
     monkeypatch.setenv("NGEN_WEAVE_FAKE_REPLIES", str(replies))
 
-    async with running_server(example_project) as url:
-        async with (
-            streamable_http_client(url) as (read_stream, write_stream),
-            ClientSession(read_stream, write_stream) as session,
-        ):
+    async with (
+        running_server(example_project) as url,
+        streamable_http_client(url) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
             await session.initialize()
             result = await session.call_tool(TOOL_NAME, {"diff": diff})
 
