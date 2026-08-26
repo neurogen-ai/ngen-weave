@@ -41,7 +41,12 @@ Each destination's assembly form is fixed at compile time in the plan:
 - entry: reads `__ngen_input__` (the composite input).
 - single: passes the parent's dump through.
 - slots: `{field: parent dump}` for each `into=` edge.
-- collect: appends parent dumps to the input model's one list field.
+- collect: appends parent dumps to the input model's one list field. Order
+  is the fan-in edges' `add_edge()` declaration order unless the collector
+  declares `collect_order = "<dotted path>"`, in which case entries are
+  stable-sorted by that path and ties keep declaration order. Both behaviors
+  are deterministic across runs and resumes; the path is validated at import
+  time against every parent's `output_type`.
 - dispatch: takes the output of whichever node dispatched here.
 
 Assembly raises a `DataError` naming missing parents if a form's sources have
