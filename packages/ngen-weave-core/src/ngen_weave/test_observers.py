@@ -1,14 +1,21 @@
-"""Tests for observer predicates, descriptions, and import-time validation."""
+"""Observer predicates, descriptions, validation, and boundary wiring."""
 
 from __future__ import annotations
 
 import pytest
 from pydantic import BaseModel
+from tests.fakes import FakeProvider
 
+import ngen_weave.engine.runner as ngen_runner  # noqa: F401
+from ngen_weave import registry
+from ngen_weave.config import Budget, RunSettings
+from ngen_weave.engine import Engine
+from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import ConfigError
 from ngen_weave.observers import Observer, ObserverPredicate, eq, ge, gt, le, lt
 from ngen_weave.provenance import RunMetadata
-from ngen_weave.workflow import Worker
+from ngen_weave.workflow import END, START, Worker, workflow_class_path
+from ngen_weave.workflow import Workflow as _W
 
 
 class In(BaseModel):
@@ -170,3 +177,237 @@ def test_unknown_action_rejected_naming_class():
     obs = Observer(gt("cost_usd", 1.0), action="stop")  # type: ignore[arg-type]
     with pytest.raises(ConfigError, match="StoppedWorker.*unknown action"):
         make_worker("StoppedWorker", observations=(obs,))
+
+
+# --- engine wiring: evaluation at the activation boundary ---------------------
+
+class Text(BaseModel):
+    text: str
+
+
+class Mid(BaseModel):
+    text: str
+
+
+class Tail(BaseModel):
+    text: str
+
+
+ENG_REPLIES = ['{"text":"one"}', '{"text":"two"}', '{"text":"three"}']
+
+
+@pytest.fixture(autouse=True)
+def _clean_registry():
+    """Generated engine classes reuse short names; isolate the global registry."""
+    registry.reset()
+    yield
+    registry.reset()
+
+
+def bound_worker(name: str, in_t, out_t, **attrs):
+    """Registered Worker subclass; attrs carry declared observations."""
+    cls = type(
+        name,
+        (Worker,),
+        {"prompt": "echo {text}", "input_type": in_t, "output_type": out_t, **attrs},
+    )
+    registry.register(cls, "test")
+    return cls
+
+
+def bound_chain(name: str, children, in_t, out_t, *, attrs=None):
+    """Registered linear composite whose nodes are `children` in order."""
+
+    def build(self, g):
+        for c in children:
+            g.add_node(c)
+        g.add_edge(START, children[0])
+        for a, b in zip(children, children[1:], strict=False):
+            g.add_edge(a, b)
+        g.add_edge(children[-1], END)
+
+    cls = type(
+        name,
+        (_W,),
+        {"input_type": in_t, "output_type": out_t, "build": build, **(attrs or {})},
+    )
+    registry.register(cls, "test")
+    return cls
+
+
+def bound_engine(tmp_path, provider=None, *, settings=None):
+    """Engine over a tmp store, wired exactly like the budget suites."""
+    return Engine(
+        provider or FakeProvider(),
+        RunStore(tmp_path / "runs"),
+        checkpointer="sqlite",
+        db_path=tmp_path / "cp.db",
+        settings=settings,
+    )
+
+
+def kind_records(rf, kind: str):
+    """All provenance records of one kind, oldest first."""
+    return [r for r in rf.records if r.kind == kind]
+
+
+def model_calls_on(rf, leaf) -> int:
+    """Count model_call records attributed to one leaf's activation path."""
+    leaf_path = workflow_class_path(leaf)
+    return len(
+        [
+            r
+            for r in rf.records
+            if r.kind == "model_call" and r.node_path.endswith(leaf_path)
+        ]
+    )
+
+
+async def test_composite_cost_crossing_threshold_pauses_with_one_record(tmp_path):
+    cw1 = bound_worker("ObsCw1", Text, Mid)
+    cw2 = bound_worker("ObsCw2", Mid, Mid)
+    cw3 = bound_worker("ObsCw3", Mid, Tail)
+    inner = bound_chain(
+        "ObsInnerComp",
+        [cw1, cw2],
+        Text,
+        Mid,
+        attrs={"observations": (Observer(gt("cost_usd", 0.2)),)},
+    )
+    outer = bound_chain("ObsOuterComp", [inner, cw3], Text, Tail)
+    engine = bound_engine(tmp_path, FakeProvider(ENG_REPLIES))
+
+    result = await engine.run(outer, Text(text="hi"))
+
+    assert result.status == "paused"
+    assert result.output is None
+    assert result.waiting == {
+        "node_path": f"{workflow_class_path(outer)}.{workflow_class_path(inner)}",
+        "reason": "observer_firing",
+        "observer": "cost_usd > 0.2",
+    }
+    assert len(engine.provider.calls) == 2  # subtree ran; cw3 never started
+    firings = kind_records(engine.store.load(result.run_id), "observer_firing")
+    assert len(firings) == 1
+    payload = firings[0].payload
+    assert payload["predicate"] == "cost_usd > 0.2"
+    assert payload["field"] == "cost_usd"
+    assert payload["op"] == "gt"
+    assert payload["value"] == pytest.approx(0.2)
+    assert payload["observed"] == pytest.approx(0.229)  # subtree aggregate
+    assert payload["action"] == "pause"
+
+
+async def test_leaf_observer_fires_on_own_activation_metadata(tmp_path):
+    low = bound_worker("OwnActWorker", Text, Mid, observations=(Observer(gt("cost_usd", 0.1)),))
+    tail = bound_worker("OwnActTail", Mid, Tail)
+    chain = bound_chain("OwnActChain", [low, tail], Text, Tail)
+    engine = bound_engine(tmp_path, FakeProvider(ENG_REPLIES))
+
+    result = await engine.run(chain, Text(text="hi"))
+
+    assert result.status == "paused"
+    assert result.waiting == {
+        "node_path": f"{workflow_class_path(chain)}.{workflow_class_path(low)}",
+        "reason": "observer_firing",
+        "observer": "cost_usd > 0.1",
+    }
+    assert len(engine.provider.calls) == 1  # only the observed leaf ran
+    firings = kind_records(engine.store.load(result.run_id), "observer_firing")
+    assert len(firings) == 1
+    assert firings[0].node_path.endswith(workflow_class_path(low))
+    assert firings[0].payload["observed"] == pytest.approx(0.114)
+
+
+async def test_depth_two_leaf_observer_pauses_and_resume_skips_committed_nodes(tmp_path):
+    deep = bound_worker("DeepObsLeaf", Text, Mid, observations=(Observer(gt("cost_usd", 0.1)),))
+    deeper = bound_worker("DeepPlainLeaf", Mid, Mid)
+    tail3 = bound_worker("DeepObsTail", Mid, Tail)
+    inner = bound_chain("DeepObsInner", [deep, deeper], Text, Mid)
+    outer = bound_chain("DeepObsOuter", [inner, tail3], Text, Tail)
+    engine = bound_engine(tmp_path, FakeProvider(ENG_REPLIES))
+
+    paused = await engine.run(outer, Text(text="hi"))
+
+    assert paused.status == "paused"
+    assert paused.waiting["reason"] == "observer_firing"
+    assert paused.waiting["observer"] == "cost_usd > 0.1"
+    assert paused.waiting["node_path"].endswith(workflow_class_path(deep))
+    assert len(engine.provider.calls) == 2
+
+    resumed = bound_engine(tmp_path, FakeProvider(ENG_REPLIES[2:]))
+    result = await resumed.resume(paused.run_id)
+
+    assert result.status == "completed"
+    assert result.output == Tail(text="three")
+    rf = resumed.store.load(result.run_id)
+    assert model_calls_on(rf, deep) == 1  # committed subtree never re-executed
+    assert model_calls_on(rf, deeper) == 1
+    assert model_calls_on(rf, tail3) == 1
+    assert len(kind_records(rf, "observer_firing")) == 1
+    assert rf.status == "completed"
+
+
+async def test_resume_after_flat_observer_pause_completes(tmp_path):
+    first = bound_worker("FlatObsWorker", Text, Mid, observations=(Observer(gt("cost_usd", 0.1)),))
+    second = bound_worker("FlatObsTail", Mid, Tail)
+    chain = bound_chain("FlatObsChain", [first, second], Text, Tail)
+    engine = bound_engine(tmp_path, FakeProvider(ENG_REPLIES))
+    paused = await engine.run(chain, Text(text="hi"))
+    assert paused.status == "paused"
+
+    resumed = bound_engine(tmp_path, FakeProvider(ENG_REPLIES[1:]))
+    result = await resumed.resume(paused.run_id)
+
+    assert result.status == "completed"
+    assert result.output == Tail(text="two")
+    rf = resumed.store.load(result.run_id)
+    assert model_calls_on(rf, first) == 1 and model_calls_on(rf, second) == 1
+    assert len(kind_records(rf, "observer_firing")) == 1
+
+
+async def test_budget_breach_suppresses_observer_at_same_boundary(tmp_path):
+    greedy = bound_worker(
+        "ShortCircuitWorker", Text, Mid, observations=(Observer(gt("cost_usd", 0.05)),)
+    )
+    follower = bound_worker("ShortCircuitTail", Mid, Tail)
+    chain = bound_chain("ShortCircuitChain", [greedy, follower], Text, Tail)
+    engine = bound_engine(
+        tmp_path,
+        FakeProvider(ENG_REPLIES),
+        settings=RunSettings(checkpointer="sqlite", budget=Budget(steps=1)),
+    )
+
+    result = await engine.run(chain, Text(text="hi"))
+
+    assert result.status == "paused"
+    assert result.waiting["reason"] == "budget_exhausted"
+    rf = engine.store.load(result.run_id)
+    breaches = kind_records(rf, "budget_exhausted")
+    assert len(breaches) == 1
+    assert breaches[0].payload == {"dimension": "steps", "limit": 1, "observed": 1}
+    assert kind_records(rf, "observer_firing") == []  # order pinned from C1
+
+
+async def test_root_observer_is_informational_at_completion(tmp_path):
+    runner_leaf = bound_worker("RootInfoWorker", Text, Tail)
+    root = bound_chain(
+        "RootInfoChain",
+        [runner_leaf],
+        Text,
+        Tail,
+        attrs={"observations": (Observer(le("iterations", 5)),)},
+    )
+    engine = bound_engine(tmp_path, FakeProvider(ENG_REPLIES))
+
+    result = await engine.run(root, Text(text="go"))
+
+    assert result.status == "completed"
+    assert result.output == Tail(text="one")
+    firings = kind_records(engine.store.load(result.run_id), "observer_firing")
+    assert len(firings) == 1
+    assert firings[0].node_path == workflow_class_path(root)
+    assert firings[0].payload["field"] == "iterations"
+    assert firings[0].payload["op"] == "le"
+    assert firings[0].payload["observed"] == 1
+    assert firings[0].payload["action"] == "pause"
