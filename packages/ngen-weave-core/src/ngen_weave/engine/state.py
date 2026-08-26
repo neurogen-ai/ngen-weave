@@ -39,6 +39,8 @@ class RunFile:
         attempts: How many times the engine has driven this run; each attempt
             gets its own checkpoint namespace so a failed run re-executes
             from the top instead of replaying a dead superstep.
+        started_at: UTC ISO-8601 creation timestamp; empty for legacy imports.
+        notes: Operator-attached free-text annotations.
         records: Full provenance stream, oldest first.
     """
 
@@ -51,6 +53,8 @@ class RunFile:
     error: dict[str, str] | None = None  # {"type": str, "message": str}
     attempts: int = 0
     submissions: dict[str, dict] = field(default_factory=dict)
+    started_at: str = ""  # UTC ISO-8601
+    notes: list[str] = field(default_factory=list)
     records: list[ProvenanceRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -65,6 +69,8 @@ class RunFile:
             "error": self.error,
             "attempts": self.attempts,
             "submissions": self.submissions,
+            "started_at": self.started_at,
+            "notes": list(self.notes),
             "records": [dataclasses.asdict(record) for record in self.records],
         }
 
@@ -81,6 +87,8 @@ class RunFile:
             error=data.get("error"),
             attempts=data.get("attempts", 0),
             submissions=data.get("submissions", {}),
+            started_at=data.get("started_at", ""),
+            notes=list(data.get("notes", ())),
             records=[ProvenanceRecord(**record) for record in data.get("records", ())],
         )
 

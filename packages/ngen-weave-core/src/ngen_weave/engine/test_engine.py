@@ -89,17 +89,28 @@ class TestRunStore:
         with pytest.raises(Exception, match="unknown run"):
             store.load("nope")
 
-    def test_save_is_atomic_and_valid_json(self, tmp_path: Path):
+    def test_save_is_durable_and_valid_json(self, tmp_path: Path):
         store = RunStore(tmp_path / "runs")
         run_id = store.create("m.W", {})
         store.append(run_id, _record(run_id, 0))
-        raw = (tmp_path / "runs" / f"{run_id}.json").read_text()
+        # The SQLite backing keeps only runs.db; every committed record is
+        # readable and valid JSON from an independent connection.
         import json
+        import sqlite3
 
-        data = json.loads(raw)  # always valid JSON on disk
-        assert data["records"][0]["payload"] == {"status": "ok"}
-        leftovers = [p for p in (tmp_path / "runs").iterdir() if p.suffix != ".json"]
-        assert leftovers == []  # temp file never survives a save
+        fresh = RunStore(tmp_path / "runs")
+        data = fresh.load(run_id)
+        conn = sqlite3.connect(tmp_path / "runs.db")
+        payload = json.loads(
+            conn.execute(
+                "SELECT payload_json FROM records WHERE run_id = ? AND seq = 1", (run_id,)
+            ).fetchone()[0]
+        )
+        conn.close()
+        assert payload == {"status": "ok"}
+        assert [r.payload for r in data.records] == [{"status": "ok"}]
+        leftovers = list((tmp_path / "runs").iterdir())
+        assert leftovers == []  # the runs dir holds no flat run files anymore
 
     def test_append_accumulates_stream_in_order(self, tmp_path: Path):
         store = RunStore(tmp_path / "runs")
