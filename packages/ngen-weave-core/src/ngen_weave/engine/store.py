@@ -295,6 +295,35 @@ class RunStore:
             payload=json.loads(rec["payload_json"]),
         )
 
+    def node_activations_tail(self, run_id: str, count: int) -> list[ProvenanceRecord]:
+        """Return the most recent `count` node_activation records, oldest first.
+
+        Boundary hooks process a superstep's freshly committed activations --
+        potentially several when one composite encloses its subtree -- without
+        rescanning the whole stream.
+
+        Raises:
+            UnknownRunError: Unknown run id.
+        """
+        if self._fetch_row(run_id) is None:
+            raise UnknownRunError(f"unknown run: {run_id}")
+        rows = self._conn.execute(
+            "SELECT node_path, ts, payload_json FROM records "
+            "WHERE run_id = ? AND kind = 'node_activation' ORDER BY seq DESC LIMIT ?",
+            (run_id, count),
+        ).fetchall()
+        return [
+            ProvenanceRecord(
+                version=PROVENANCE_VERSION,
+                run_id=run_id,
+                node_path=row["node_path"],
+                kind="node_activation",
+                ts=row["ts"],
+                payload=json.loads(row["payload_json"]),
+            )
+            for row in reversed(rows)
+        ]
+
     def list(self) -> list[RunFile]:
         """Return header-only snapshots of every run, ordered by run id.
 

@@ -105,6 +105,8 @@ class CompiledGraph:
             update-event keys against it to spot committed activations.
         humans: Waiting node path -> Human class for every wired human leaf;
             resume uses it to validate submissions before continuing.
+        children: Wired child path -> child CompiledGraph for composites; the
+            observer boundary walks it to resolve any nested node's class.
         saver: This graph's dedicated memory checkpointer; levels must not
             share one, or interrupt resume silently becomes a no-op.
     """
@@ -116,13 +118,26 @@ class CompiledGraph:
         builder: Any,
         humans: dict[str, type[Workflow]] | None = None,
         wiring: Any = None,
+        children: dict[str, CompiledGraph] | None = None,
     ) -> None:
         self.root = root
         self.variants = variants
         self.builder = builder
         self.wiring = wiring
         self.humans = humans or {}
+        self.children = children or {}
         self.saver: Any = None
+
+
+def _activation_metadata(record: ProvenanceRecord | None) -> RunMetadata | None:
+    """Extract the RunMetadata payload of an ok node_activation record, else None."""
+    if (
+        record is not None
+        and record.payload.get("status") == "ok"
+        and isinstance(record.payload.get("metadata"), dict)
+    ):
+        return RunMetadata(**record.payload["metadata"])
+    return None
 
 
 def render_prompt(template: str, dump: dict, node_path: str) -> str:
@@ -509,18 +524,19 @@ class Engine:
         """Return True when the driver must stop before the next activation.
 
         Checks run in order -- cancel flag first, then budget, then observers
-        (step H2 plugs into the same call site); first breach wins, so a
-        budget breach short-circuits any observer predicate evaluated at this
-        same boundary. Budget totals come from the store's incrementally
-        maintained columns via the run file's identity, never from rescanning
-        records; cost_usd compares accumulated model-call spend and steps
-        compare node_activation counts (a breach fires when observed reaches
-        the limit). On a budget breach this emits exactly one budget_exhausted
-        record naming the crossing activation and flips _boundary_stop to a
-        paused outcome whose waiting dict carries node_path plus reason; a
-        paused run later resumes by driving with a None seed on the SAME
-        checkpoint namespace, so LangGraph schedules the next node from its
-        persisted channel state without replaying committed ones.
+        (evaluated by the driver's consumption loop right after this hook
+        declines to stop); first breach wins, so a budget breach short-circuits
+        any observer predicate evaluated at this same boundary. Budget totals
+        come from the store's incrementally maintained columns via the run
+        file's identity, never from rescanning records; cost_usd compares
+        accumulated model-call spend and steps compare node_activation counts
+        (a breach fires when observed reaches the limit). On a budget breach
+        this emits exactly one budget_exhausted record naming the crossing
+        activation and flips _boundary_stop to a paused outcome whose waiting
+        dict carries node_path plus reason; a paused run later resumes by
+        driving with a None seed on the SAME checkpoint namespace, so
+        LangGraph schedules the next node from its persisted channel state
+        without replaying committed ones.
         """
         run_id = run_file.run_id
         if run_id in self._cancel_flags:
@@ -546,6 +562,73 @@ class Engine:
             "waiting": {"node_path": node_path, "reason": "budget_exhausted"},
         }
         return True
+
+    def _observe_boundary(
+        self, compiled: CompiledGraph, run_id: str, batch: list[ProvenanceRecord]
+    ) -> bool:
+        """Evaluate declared observers over this boundary's committed activations.
+
+        One evaluation per committed node_activation record, against that
+        record's metadata payload; returns True when any pause fired. An
+        observer applies only to the class that declares it, never implicitly
+        to nested subgraphs -- a leaf watches its own activation metadata at
+        its own boundary, a composite its subtree-aggregated metadata at its
+        completion boundary (a completion artifact, so mid-scope subtree
+        checks do not exist in v0.2 and mid-run cost control belongs to
+        budgets). Two documented no-special-cases: a Human activation's
+        metadata has empty usage (cost 0, iterations 1), and a leaf's
+        iterations equals its retry attempt count, so gt(iterations, n) on a
+        leaf watches retries. Each firing emits one observer_firing record;
+        multiple firings at one boundary each land their record and the run
+        pauses once via the same _boundary_stop mechanism budgets use.
+        """
+        table = self._observer_table(compiled)
+        fired = False
+        for record in batch:
+            meta = _activation_metadata(record)
+            cls = table.get(record.node_path)
+            if meta is None or cls is None:
+                continue
+            for obs in cls.observations:
+                pred = obs.predicate
+                if not pred.evaluate(meta):
+                    continue
+                self._emitter(run_id, record.node_path)(
+                    "observer_firing",
+                    {
+                        "predicate": pred.describe(),
+                        "field": pred.field,
+                        "op": pred.op,
+                        "value": pred.value,
+                        "observed": getattr(meta, pred.field),
+                        "action": obs.action,
+                    },
+                )
+                self._boundary_stop = {
+                    "status": "paused",
+                    "waiting": {
+                        "node_path": record.node_path,
+                        "reason": "observer_firing",
+                        "observer": pred.describe(),
+                    },
+                }
+                fired = True
+        return fired
+
+    def _observer_table(self, compiled: CompiledGraph) -> dict[str, type[Workflow]]:
+        """Map every full activation node path in the tree to its declaring class."""
+        table: dict[str, type[Workflow]] = {}
+
+        def walk(level: CompiledGraph, prefix: str) -> None:
+            for path, cls in level.wiring.nodes.items():
+                full = f"{prefix}.{path}"
+                table[full] = cls
+                child = level.children.get(path)
+                if child is not None:  # composites recurse into their own graphs
+                    walk(child, full)
+
+        walk(compiled, workflow_class_path(compiled.root))
+        return table
 
     # --- compilation ---------------------------------------------------------
 
@@ -633,7 +716,12 @@ class Engine:
 
         builder = self._build_production_graph(wiring, recorder.ops, cell)
         compiled = CompiledGraph(
-            root=wf, variants=variants, builder=builder, humans=humans, wiring=wiring
+            root=wf,
+            variants=variants,
+            builder=builder,
+            humans=humans,
+            wiring=wiring,
+            children=children,
         )
         if self.checkpointer == "memory":
             from langgraph.checkpoint.memory import MemorySaver
@@ -1190,6 +1278,24 @@ class Engine:
         self._emitter(run_id, root_path)(
             "node_activation", {"status": "ok", "metadata": dataclasses.asdict(metadata)}
         )
+        # Root observers fire here, after the whole graph succeeded: they are
+        # structural or informational and cannot pause anything -- run-level
+        # caps belong to budgets (C1). The status stays completed either way.
+        for obs in compiled.root.observations:
+            pred = obs.predicate
+            if not pred.evaluate(metadata):
+                continue
+            self._emitter(run_id, root_path)(
+                "observer_firing",
+                {
+                    "predicate": pred.describe(),
+                    "field": pred.field,
+                    "op": pred.op,
+                    "value": pred.value,
+                    "observed": getattr(metadata, pred.field),
+                    "action": obs.action,
+                },
+            )
 
     async def _consume_root(
         self,
@@ -1222,11 +1328,14 @@ class Engine:
         depth>=2 activations never surface in this root stream even with
         subgraphs=True -- nested activations instead pause at the enclosing
         composite's commit boundary. Flat graphs get exact per-activation
-        boundaries; budget totals are identical either way.
+        boundaries; budget totals are identical either way. The same deviation
+        covers observers: depth>=2 activations are observed together with
+        their enclosing composite at that composite's commit boundary.
         """
         config = self._invocation_config(run_id, checkpoint_ns, resuming, resume_value)
         async with self._open_graph(compiled) as graph:
             final: dict[str, Any] = {}
+            committed_before = self.store.usage_totals(run_id)[1]
             stream = graph.astream(
                 invoke_seed, config=config, stream_mode="updates", subgraphs=True
             )
@@ -1238,16 +1347,28 @@ class Engine:
                     if "__interrupt__" in keys or compiled.wiring.nodes.keys().isdisjoint(keys):
                         continue  # halts resolve through _waiting; relay steps write nothing
                     self._merge_update(final, chunk)
-                    last = self.store.last_node_activation(run_id)
-                    metadata = None
-                    if (
-                        last is not None
-                        and last.payload.get("status") == "ok"
-                        and isinstance(last.payload.get("metadata"), dict)
-                    ):
-                        metadata = RunMetadata(**last.payload["metadata"])
+                    committed_now = self.store.usage_totals(run_id)[1]
+                    fresh, committed_before = committed_now - committed_before, committed_now
+                    if fresh <= 0:
+                        # A boundary-resumed drive replays the interrupted
+                        # superstep's update from cached checkpoint writes: the
+                        # node did not re-execute (no new records), so nothing
+                        # committed at this chunk. It is not a boundary -- feeding
+                        # its stale metadata to _at_boundary/_observe_boundary
+                        # would re-fire pause decisions forever.
+                        continue
+                    # One superstep can commit several activations when a composite
+                    # encloses them; each is observed together at this boundary.
+                    batch = self.store.node_activations_tail(run_id, fresh)
+                    last = batch[-1] if batch else None
                     header = self.store.peek(run_id)
-                    if self._at_boundary(header, last.node_path if last else "", metadata):
+                    if self._at_boundary(
+                        header,
+                        last.node_path if last else "",
+                        _activation_metadata(last),
+                    ):
+                        break
+                    if self._observe_boundary(compiled, run_id, batch):
                         break
             finally:
                 await stream.aclose()
