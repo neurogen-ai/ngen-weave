@@ -1437,24 +1437,18 @@ version = "0.1.3"
 source = { editable = "packages/ngen-weave-server" }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "ngen-weave-core" },
     { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "httpx" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "ngen-weave-core", editable = "packages/ngen-weave-core" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-
-[package.metadata.requires-dev]
-dev = [{ name = "httpx", specifier = ">=0.27" }]
 
 [[package]]
 name = "openai"
