@@ -9,8 +9,10 @@ import typer
 from ngen_weave.config import load_config
 from ngen_weave.discovery import discover
 from ngen_weave.engine.store import RunStore
-from ngen_weave.errors import ConfigError, NgWeaveError
+from ngen_weave.errors import ConfigError, DataError, NgWeaveError
+from ngen_weave.schema_errors import format_validation_error
 from ngen_weave.workflow import Workflow
+from pydantic import ValidationError
 
 from .context import NGEN_WEAVE_DIR, _build_engine, merged_registry
 
@@ -108,7 +110,16 @@ def run_command(
         if input_file is None:
             _fail(ConfigError("no input given; pass -i input.json"))
         raw = _read_json(input_file)
-        model = wf.input_type.model_validate(raw)
+        try:
+            model = wf.input_type.model_validate(raw)
+        except ValidationError as exc:
+            _fail(
+                DataError(
+                    f"{input_file} does not match "
+                    f"{format_validation_error(wf.input_type, exc)}\n"
+                    "Fix the fields above and resubmit."
+                )
+            )
         app_ctx = _build_engine(config, project=project)
         result = asyncio.run(app_ctx.engine.run(wf, model, models=models))
     except NgWeaveError as exc:

@@ -2,7 +2,8 @@
     "defaultVariant": "example-model",
     "variants": {
         "example-model": {
-            "model": "openai/ggml-org/GLM-4.7-Flash-GGUF:Q8_0",
+            "model": "ggml-org/GLM-4.7-Flash-GGUF:Q8_0",
+            "api": "openai",
             "api_base": "http://localhost:8080/v1",
             "api_key": "dummy"
         }

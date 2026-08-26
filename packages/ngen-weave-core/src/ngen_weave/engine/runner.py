@@ -43,9 +43,15 @@ except ImportError:  # pragma: no cover
 from pydantic import BaseModel, ValidationError
 
 from ngen_weave.artifacts import ArtifactMeta, ArtifactStore, hash_value
+from ngen_weave.constants import REPLY_EXCERPT_CHARS
 from ngen_weave.engine.state import RunResult, RunStatus
 from ngen_weave.engine.store import RunStore
-from ngen_weave.errors import ConfigError, DataError, InfraError
+from ngen_weave.errors import (
+    AgentReplyError,
+    ConfigError,
+    DataError,
+    InfraError,
+)
 from ngen_weave.human import apply_prefill, build_response_slots, validate_completion
 from ngen_weave.models.provider import CompletionProvider
 from ngen_weave.provenance import (
@@ -55,6 +61,7 @@ from ngen_weave.provenance import (
     join_path,
 )
 from ngen_weave.registry import get as registry_get
+from ngen_weave.schema_errors import format_validation_error
 from ngen_weave.workflow import (
     END,
     START,
@@ -140,14 +147,17 @@ def _wrap(value: Any) -> Any:
 
 
 def parse_boolean(reply: str, node_path: str) -> bool:
-    """Parse a model reply as the control boolean; unparseable is DataError."""
+    """Parse a model reply as the control boolean; unparseable is retryable."""
     normalized = reply.strip().lower()
     if normalized in {"true", "false"}:
         return normalized == "true"
     for token in normalized.replace(",", " ").replace(".", " ").split():
         if token in {"true", "false"}:
             return token == "true"
-    raise DataError(f"{node_path}: model reply {reply!r} is not a parseable boolean verdict")
+    raise AgentReplyError(
+        f"{node_path}: model reply {reply!r} is not a parseable boolean verdict\n"
+        f"last reply: {reply[:REPLY_EXCERPT_CHARS]!r}"
+    )
 
 
 def _strip_code_fence(text: str) -> str:
@@ -175,8 +185,10 @@ def parse_output(output_type: type[BaseModel], text: str, node_path: str) -> Bas
         except ValidationError:
             return output_type.model_validate(candidate)
     except ValidationError as exc:
-        raise DataError(
-            f"{node_path}: output does not match {output_type.__name__}: {exc}"
+        raise AgentReplyError(
+            f"{node_path}: reply does not match "
+            f"{format_validation_error(output_type, exc)}\n"
+            f"last reply: {text[:REPLY_EXCERPT_CHARS]!r}"
         ) from None
 
 
@@ -594,7 +606,7 @@ class Engine:
                                     cls, path, model, ctx, usage, cell
                                 )
                                 break
-                            except InfraError:
+                            except (InfraError, AgentReplyError):
                                 if attempt > self.max_retries:
                                     raise
                                 emit("node_activation", {"status": "retry", "attempt": attempt})

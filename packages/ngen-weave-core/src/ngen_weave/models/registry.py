@@ -6,12 +6,46 @@ LiteLLMProvider is the only module importing litellm; adapters translate, never 
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from ngen_weave.errors import ConfigError, DataError, InfraError
+from ngen_weave.errors import ConfigError, DataError, InfraError, ProviderError
 from ngen_weave.models.provider import Completion
+
+# Litellm provider prefixes; a model string starting with one is already
+# pre-prefixed, so an explicit api must not prepend another.
+_KNOWN_PROVIDER_PREFIXES = frozenset(
+    {"openai/", "anthropic/", "google/", "azure/", "bedrock/", "ollama/", "huggingface/"}
+)
+
+_NOISY_LOGGERS = ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy")
+
+
+def _permanent_failures() -> tuple[tuple[type[Exception], str], ...]:
+    """Exception types retrying cannot fix, each with its diagnosis line."""
+    import litellm.exceptions
+
+    return (
+        (
+            litellm.exceptions.AuthenticationError,
+            "authentication rejected by provider.\n"
+            "Set the API key environment variable for this provider "
+            "(see models.json), or point api_base at a local server "
+            "(e.g. http://localhost:8080/v1).",
+        ),
+        (
+            litellm.exceptions.NotFoundError,
+            "model or endpoint not found.\n"
+            "Check the model name and api_base for this variant in models.json.",
+        ),
+        (
+            litellm.exceptions.APIConnectionError,
+            "could not reach the provider endpoint.\n"
+            "Check the network and api_base for this variant in models.json.",
+        ),
+    )
 
 
 class ModelRegistry:
@@ -29,6 +63,12 @@ class ModelRegistry:
         for name, entry in variants.items():
             if not isinstance(entry, dict) or "model" not in entry:
                 raise ConfigError(f"{path}: variant {name!r} needs at least a 'model' key")
+            api = entry.get("api")
+            if api is not None and (not isinstance(api, str) or not api):
+                raise ConfigError(
+                    f"{path}: variant {name!r} has invalid api {api!r}; "
+                    "expected a provider prefix such as 'openai'"
+                )
         self.variants = variants
 
     @classmethod
@@ -51,7 +91,13 @@ class ModelRegistry:
         entry = self.variants.get(name)
         if entry is None:
             raise ConfigError(f"{self.path}: unknown variant {name!r}")
-        return dict(entry)
+        copy = dict(entry)
+        api = copy.pop("api", None)
+        prefix = f"{api.rstrip('/')}/" if isinstance(api, str) and api else None
+        already_prefixed = any(copy["model"].startswith(p) for p in _KNOWN_PROVIDER_PREFIXES)
+        if prefix and not already_prefixed:
+            copy["model"] = prefix + copy["model"]
+        return copy
 
 
 class LiteLLMProvider:
@@ -64,6 +110,11 @@ class LiteLLMProvider:
 
     def __init__(self, registry: ModelRegistry) -> None:
         self.registry = registry
+        for name in _NOISY_LOGGERS:
+            logger = logging.getLogger(name)
+            logger.handlers.clear()
+            logger.addHandler(logging.NullHandler())
+            logger.propagate = False
 
     async def complete(self, messages: list[dict], *, variant: str | None = None) -> Completion:
         """Run one completion under the named (or default) variant."""
@@ -72,7 +123,12 @@ class LiteLLMProvider:
         kwargs = self.registry.kwargs(variant)
         try:
             response = await litellm.acompletion(messages=messages, **kwargs)
-        except Exception as exc:  # noqa: BLE001 - any transport failure is retryable
+        except Exception as exc:  # noqa: BLE001 - any transport failure lands here
+            for cls, diagnosis in _permanent_failures():
+                if isinstance(exc, cls):
+                    raise ProviderError(
+                        f"model call failed for variant {variant!r}: {diagnosis}"
+                    ) from exc
             raise InfraError(f"model call failed for variant {variant!r}: {exc}") from exc
 
         try:

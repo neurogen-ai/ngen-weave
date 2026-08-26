@@ -1121,7 +1121,7 @@ wheels = [
 
 [[package]]
 name = "ngen-weave"
-version = "0.1.0"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "ngen-weave-cli" },
@@ -1148,7 +1148,7 @@ dev = [
 
 [[package]]
 name = "ngen-weave-cli"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "packages/ngen-weave-cli" }
 dependencies = [
     { name = "ngen-weave-core" },
@@ -1163,7 +1163,7 @@ requires-dist = [
 
 [[package]]
 name = "ngen-weave-core"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "packages/ngen-weave-core" }
 dependencies = [
     { name = "langgraph" },

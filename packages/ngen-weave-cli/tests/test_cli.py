@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import textwrap
 
 import pytest
@@ -41,6 +42,50 @@ FIXTURE_SOURCE = textwrap.dedent(
 
         async def run(self, input, ctx):
             return EchoOut(echoed=input.text)
+    """
+)
+
+REVIEW_SOURCE = textwrap.dedent(
+    """
+    from enum import Enum
+
+    from pydantic import BaseModel
+
+    from ngen_weave.workflow import END, START, Human, Workflow
+
+
+    class ReviewIn(BaseModel):
+        text: str
+
+
+    class Verdict(str, Enum):
+        approve = "approve"
+        reject = "reject"
+
+
+    class ReviewState(BaseModel):
+        verdict: Verdict
+        notes: str
+
+
+    class Approve(Human):
+        description = "test review"
+        human_description = "approve or reject"
+        input_type = ReviewIn
+        output_type = ReviewState
+        state_type = ReviewState
+
+
+    class ReviewFlow(Workflow):
+        description = "test review flow"
+        human_description = "runs one review"
+        input_type = ReviewIn
+        output_type = ReviewState
+
+        def build(self, g):
+            g.add_node(Approve)
+            g.add_edge(START, Approve)
+            g.add_edge(Approve, END)
     """
 )
 
@@ -285,3 +330,82 @@ def test_json_input_must_be_object(workflow_module, fake_provider, tmp_path):
     result = runner.invoke(app, ["run", "x", "-i", input_file, "-c", config])
     assert result.exit_code == 1
     assert "object" in result.stderr
+
+
+def _seed_waiting_review(tmp_path) -> str:
+    """Seed a waiting_human run parked on the fixture review's Approve node."""
+    store = RunStore(tmp_path / ".ngen-weave" / "runs")
+    run_id = store.create("cli_fixture_workflows.ReviewFlow", {"text": "hi"})
+    run_file = store.load(run_id)
+    run_file.records.append(
+        ProvenanceRecord(
+            version=1,
+            run_id=run_id,
+            # mirrors the engine: parent class path joined with the human's own class path
+            node_path="cli_fixture_workflows.ReviewFlow.cli_fixture_workflows.Approve",
+            kind="node_activation",
+            ts="2025-01-01T00:00:00Z",
+            payload={"status": "waiting_human", "artifact": "review.yaml"},
+        )
+    )
+    run_file.status = "waiting_human"
+    store.save(run_file)
+    return run_id
+
+
+def _install_review_module(tmp_path, monkeypatch):
+    (tmp_path / f"{FIXTURE_MODULE}.py").write_text(FIXTURE_SOURCE + "\n" + REVIEW_SOURCE)
+    (tmp_path / "ngen-weave.json").write_text(json.dumps({"modules": [FIXTURE_MODULE]}))
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    # earlier tests may have imported the Echo-only version of the module
+    monkeypatch.delitem(sys.modules, FIXTURE_MODULE, raising=False)
+
+
+def test_resume_invalid_enum_payload_aborts_with_field_report(
+    tmp_path, monkeypatch, workflow_module
+):
+    _install_review_module(tmp_path, monkeypatch)
+    run_id = _seed_waiting_review(tmp_path)
+    response = _write(tmp_path, "response.json", '{"verdict": "bogus", "notes": "x"}')
+
+    result = runner.invoke(app, ["resume", run_id, "-p", response])
+
+    assert result.exit_code == 1, result.output
+    assert "verdict:" in result.stderr
+    assert "Fix the fields above and resubmit." not in result.stderr
+    store = RunStore(tmp_path / ".ngen-weave" / "runs")
+    retries = [
+        r
+        for r in store.load(run_id).records
+        if r.kind == "node_activation" and r.payload.get("status") == "retry"
+    ]
+    assert retries == []  # abort happens once; no retry records land
+
+
+def test_resume_missing_required_field_aborts_with_field_name(
+    tmp_path, monkeypatch, workflow_module
+):
+    _install_review_module(tmp_path, monkeypatch)
+    run_id = _seed_waiting_review(tmp_path)
+    response = _write(tmp_path, "response.json", '{"notes": "no verdict given"}')
+
+    result = runner.invoke(app, ["resume", run_id, "-p", response])
+
+    assert result.exit_code == 1, result.output
+    assert "verdict" in result.stderr
+
+
+def test_run_invalid_input_json_hard_fails_with_field_report(
+    tmp_path, monkeypatch, workflow_module
+):
+    _install_review_module(tmp_path, monkeypatch)
+    config = _write(tmp_path, "ngw.yaml", CONFIG_YAML)
+    input_file = _write(tmp_path, "input.json", "{}")
+
+    result = runner.invoke(app, ["run", "x", "-i", input_file, "-c", config])
+
+    assert result.exit_code == 1, result.output
+    assert "text:" in result.stderr  # field line from the shared formatter
+    assert "does not match" in result.stderr
+    assert "Fix the fields above and resubmit." in result.stderr
