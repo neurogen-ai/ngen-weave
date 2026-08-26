@@ -43,6 +43,11 @@ def main(argv: list[str] | None = None) -> None:
         help=f"project root holding {MANIFEST_NAME} and .ngen-weave/ (default: cwd)",
     )
     parser.add_argument(
+        "--config",
+        type=Path,
+        help="YAML/JSON run config loaded before serving (run.budget limits apply)",
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=DEFAULT_TOOL_TIMEOUT_S,
@@ -62,7 +67,9 @@ def main(argv: list[str] | None = None) -> None:
 
     os.chdir(args.root)  # manifest discovery and stores are cwd-anchored
     provider = fake_provider_from_env()
-    service = build_service(provider=provider, models_file=args.models, db_path=args.db)
+    service = build_service(
+        config_path=args.config, provider=provider, models_file=args.models, db_path=args.db
+    )
     server = Server("ngen-weave-mcp", version=_package_version())
 
     register_workflow_tools(server, merged_registry(), service, tool_timeout_s=args.timeout)

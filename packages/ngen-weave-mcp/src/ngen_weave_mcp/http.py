@@ -30,6 +30,7 @@ def create_http_app(
     tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
     models_file: Path | None = None,
     db_path: Path | None = None,
+    config_path: Path | None = None,
 ) -> ASGIApp:
     """Build a Starlette app exposing the registered workflows at /mcp.
 
@@ -37,14 +38,17 @@ def create_http_app(
     discovery, LocalRunService wiring, and register_workflow_tools unchanged
     — anchoring stores and the manifest at `root`, and swaps only the
     transport for the mcp SDK's streamable-http session manager in stateless
-    JSON mode.
+    JSON mode. Loading `config_path` before serving applies run settings such
+    as budgets.
 
     Raises:
         ConfigError: A workflow lacks a description or tool names collide.
     """
     os.chdir(root)  # manifest discovery and stores are cwd-anchored
     provider = fake_provider_from_env()
-    service = build_service(provider=provider, models_file=models_file, db_path=db_path)
+    service = build_service(
+        config_path=config_path, provider=provider, models_file=models_file, db_path=db_path
+    )
     server = Server("ngen-weave-mcp-http", version=_package_version())
 
     register_workflow_tools(server, merged_registry(), service, tool_timeout_s=tool_timeout_s)
@@ -94,6 +98,11 @@ def main(argv: list[str] | None = None) -> None:
         help=f"project root holding {MANIFEST_NAME} and .ngen-weave/ (default: cwd)",
     )
     parser.add_argument(
+        "--config",
+        type=Path,
+        help="YAML/JSON run config loaded before serving (run.budget limits apply)",
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=DEFAULT_TOOL_TIMEOUT_S,
@@ -116,5 +125,6 @@ def main(argv: list[str] | None = None) -> None:
         tool_timeout_s=args.timeout,
         models_file=args.models,
         db_path=args.db,
+        config_path=args.config,
     )
     uvicorn.run(app, host=MCP_HTTP_HOST, port=MCP_HTTP_PORT)
