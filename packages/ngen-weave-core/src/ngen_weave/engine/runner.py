@@ -43,6 +43,7 @@ except ImportError:  # pragma: no cover
 from pydantic import BaseModel, ValidationError
 
 from ngen_weave.artifacts import ArtifactMeta, ArtifactStore, hash_value
+from ngen_weave.constants import REPLY_EXCERPT_CHARS
 from ngen_weave.engine.state import RunResult, RunStatus
 from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import (
@@ -78,10 +79,6 @@ from ngen_weave.workflow import (
     workflow_class_path,
 )
 
-# Module constants.
-
-# How much of the last model reply rides an exhausted AgentReplyError message.
-REPLY_EXCERPT_CHARS = 500
 # Reserved state keys: the seeded run input, which real node wrote last
 # (used to deliver input to conditional-dispatch targets, whose effective
 # parent is the dispatching node itself), and the usage tuples every node
