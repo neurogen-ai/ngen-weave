@@ -1425,12 +1425,16 @@ source = { editable = "packages/ngen-weave-mcp" }
 dependencies = [
     { name = "mcp" },
     { name = "ngen-weave-core" },
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "mcp", specifier = ">=1.0" },
     { name = "ngen-weave-core", editable = "packages/ngen-weave-core" },
+    { name = "starlette", specifier = ">=0.27" },
+    { name = "uvicorn", specifier = ">=0.31" },
 ]
 
 [[package]]
