@@ -887,6 +887,44 @@ async def test_collected_fanin_is_deterministic_across_fresh_engines(tmp_path):
     assert prompts[0] == prompts[1]
 
 
+class _DyingProvider(FakeProvider):
+    """Provider that raises InfraError without recording, forever."""
+
+    async def complete(self, messages, *, variant=None):
+        if len(self.calls) == 0:
+            raise InfraError("provider died mid-run")
+        return await super().complete(messages, variant=variant)
+
+
+async def test_kill_and_resume_reproduces_byte_identical_prompts(tmp_path):
+    chain = _build_marker_fanin(
+        {"prompt": "{reviews[0].text} | {reviews[1].text} | {reviews[2].text}"}
+    )
+    dead = _DyingProvider(replies=list(_REPLIES))
+    engine = Engine(
+        dead,
+        RunStore(tmp_path / "killed"),
+        checkpointer="memory",
+        max_retries=1,
+        retry_backoff_ms=0,
+    )
+    failed = await engine.run(chain, Root(text="hi"))
+    assert failed.status == "failed"
+
+    resumed_provider = FakeProvider(replies=[*_REPLIES])
+    engine2 = Engine(resumed_provider, RunStore(tmp_path / "killed"), checkpointer="memory")
+    result = await engine2.resume(failed.run_id)
+    assert result.status == "completed"
+
+    fresh_provider = FakeProvider(replies=[*_REPLIES])
+    engine3 = Engine(fresh_provider, RunStore(tmp_path / "fresh"), checkpointer="memory")
+    await engine3.run(chain, Root(text="hi"))
+
+    # The collector saw identical bytes whether the run went straight
+    # through or was killed after the first level and replayed.
+    assert resumed_provider.calls[3][0][0]["content"] == fresh_provider.calls[3][0][0]["content"]
+
+
 async def test_collect_order_sort_key_reorders_fanin(tmp_path):
     chain = _build_marker_fanin(
         {
