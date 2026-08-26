@@ -5,8 +5,32 @@ from typing import Literal
 
 PROVENANCE_VERSION = 1
 
-# v0.2 widens Kind with "budget_exhausted" and "observer_firing"
-Kind = Literal["node_activation", "model_call", "artifact_write"]
+# v0.2 widens Kind with "budget_exhausted", "permission_denied" (consumed by
+# Branch E), and "observer_firing".
+#
+# Payload contracts (defined here and nowhere else):
+#   budget_exhausted: {"dimension": "cost_usd" | "steps", "limit": float | int,
+#                      "observed": float | int}
+#       Emitted once by the engine's activation-boundary hook when a run
+#       reaches its configured budget cap; node_path is the activation that
+#       crossed the limit.
+#   permission_denied: {"tool": str, "node_path": str, "policy": str}
+#       Emitted by the agent PermissionGate before raising its denial error;
+#       policy is the PermissionSet denied_policy literal.
+#   observer_firing: {"predicate": str, "field": ..., "op": ..., "value": ...,
+#                     "observed": float | int, "action": str}
+#       Emitted when a declared Observer's predicate fires against an
+#       activation's RunMetadata at its boundary (or against the root scope
+#       at run completion); predicate is pred.describe(), action the
+#       Observer action literal ("pause" in v0.2).
+Kind = Literal[
+    "node_activation",
+    "model_call",
+    "artifact_write",
+    "budget_exhausted",
+    "permission_denied",
+    "observer_firing",
+]
 
 
 @dataclass(frozen=True)

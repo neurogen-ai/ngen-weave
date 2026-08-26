@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from importlib.metadata import version
 from pathlib import Path
 
@@ -10,7 +11,9 @@ from ngen_weave.config import load_config
 from ngen_weave.discovery import discover
 from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import ConfigError, DataError, NgWeaveError
+from ngen_weave.export import dump_run_json
 from ngen_weave.schema_errors import format_validation_error
+from ngen_weave.service import UnknownRunError
 from ngen_weave.workflow import Workflow
 from pydantic import ValidationError
 
@@ -144,7 +147,7 @@ def resume(
         merged_registry()  # the run's workflow must be discoverable to resume it
         app_ctx = _build_engine(None, project=project)
         result = asyncio.run(app_ctx.engine.resume(run_id, payload))
-    except NgWeaveError as exc:
+    except (NgWeaveError, UnknownRunError) as exc:
         _fail(exc)
     typer.echo(f"status {result.status}")
     if result.status not in {"completed", "failed"}:
@@ -157,7 +160,7 @@ def status(run_id: str = typer.Argument(help="Run id to inspect.")) -> None:
     store = RunStore(NGEN_WEAVE_DIR / "runs")
     try:
         run_file = store.load(run_id)
-    except NgWeaveError as exc:
+    except (NgWeaveError, UnknownRunError) as exc:
         _fail(exc)
     typer.echo(f"workflow {run_file.workflow}")
     typer.echo(f"status {run_file.status}")
@@ -177,3 +180,23 @@ def status(run_id: str = typer.Argument(help="Run id to inspect.")) -> None:
         if record.kind == "model_call"
     )
     typer.echo(f"cost_usd {cost:.6f}")
+
+
+@app.command("export-run")
+def export_run(
+    run_id: str = typer.Argument(help="Run id to serialize."),
+    out: Path | None = typer.Option(
+        None, "--out", help="Write canonical JSON here instead of stdout."
+    ),
+) -> None:
+    """Emit a run as canonical JSON: v0.1 shape plus started_at and notes."""
+    try:
+        store = RunStore(NGEN_WEAVE_DIR / "runs")
+        data = dump_run_json(store.load(run_id))
+    except (NgWeaveError, UnknownRunError) as exc:
+        _fail(exc)
+    if out is None:
+        sys.stdout.buffer.write(data)
+        sys.stdout.flush()
+    else:
+        out.write_bytes(data)

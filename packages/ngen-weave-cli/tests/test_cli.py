@@ -409,3 +409,51 @@ def test_run_invalid_input_json_hard_fails_with_field_report(
     assert "text:" in result.stderr  # field line from the shared formatter
     assert "does not match" in result.stderr
     assert "Fix the fields above and resubmit." in result.stderr
+
+
+def test_export_run_prints_canonical_json_to_stdout(workflow_module, fake_provider, tmp_path):
+    config = _write(tmp_path, "ngw.yaml", CONFIG_YAML)
+    input_file = _write(tmp_path, "input.json", INPUT_JSON)
+    run_result = runner.invoke(app, ["run", "x", "-i", input_file, "-c", config])
+    assert run_result.exit_code == 0, run_result.output
+    run_id = run_result.output.splitlines()[0].split()[-1]
+
+    result = runner.invoke(app, ["export-run", run_id])
+
+    assert result.exit_code == 0, (result.output, result.stderr)
+    exported = json.loads(result.stdout)
+    expected = {
+        "format",
+        "run_id",
+        "workflow",
+        "status",
+        "input",
+        "output",
+        "error",
+        "attempts",
+        "submissions",
+        "records",
+        "started_at",
+        "notes",
+    }
+    assert set(exported) == expected
+    assert exported["run_id"] == run_id
+    assert exported["status"] == "completed"
+
+
+def test_export_run_writes_to_out_and_fails_on_unknown_run(
+    workflow_module, fake_provider, tmp_path
+):
+    config = _write(tmp_path, "ngw.yaml", CONFIG_YAML)
+    input_file = _write(tmp_path, "input.json", INPUT_JSON)
+    run_result = runner.invoke(app, ["run", "x", "-i", input_file, "-c", config])
+    run_id = run_result.output.splitlines()[0].split()[-1]
+
+    target = tmp_path / "export.json"
+    result = runner.invoke(app, ["export-run", run_id, "--out", str(target)])
+    assert result.exit_code == 0, (result.output, result.stderr)
+    assert json.loads(target.read_text())["status"] == "completed"
+
+    failure = runner.invoke(app, ["export-run", "no-such-run"])
+    assert failure.exit_code == 1
+    assert "unknown run" in failure.stderr

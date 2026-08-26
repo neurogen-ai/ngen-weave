@@ -15,17 +15,33 @@ from ngen_weave.errors import ConfigError
 from ngen_weave.workflow import Workflow
 
 _TOP_LEVEL_KEYS = frozenset({"workflow", "params", "models", "models_file", "run"})
-_RUN_KEYS = frozenset({"checkpointer", "db_path", "max_retries", "retry_backoff_ms"})
+_RUN_KEYS = frozenset({"checkpointer", "db_path", "max_retries", "retry_backoff_ms", "budget"})
+_BUDGET_KEYS = frozenset({"cost_usd", "steps"})
+
+
+@dataclass(frozen=True)
+class Budget:
+    """Run spending caps under run.budget; at least one limit required.
+
+    cost_usd caps accumulated model-call spend (compared against the store's
+    incrementally maintained totals); steps caps node_activation counts. A
+    breach pauses the run at the next activation boundary instead of failing
+    it, so a resume with a raised cap continues from the same checkpoint.
+    """
+
+    cost_usd: float | None = None
+    steps: int | None = None
 
 
 @dataclass(frozen=True)
 class RunSettings:
-    """Checkpointer choice, database path, and retry policy knobs."""
+    """Checkpointer choice, database path, retry policy knobs, and budget."""
 
     checkpointer: str = "sqlite"
     db_path: Path = Path(".ngen-weave/checkpoints.db")
     max_retries: int = 3
     retry_backoff_ms: int = 1000
+    budget: Budget | None = None
 
 
 @dataclass(frozen=True)
@@ -135,12 +151,42 @@ def _parse_run(raw: Any, source: Path) -> RunSettings:
         or retry_backoff_ms <= 0
     ):
         raise ConfigError(f"{source}: run.retry_backoff_ms must be a positive integer")
+    # An explicitly present run.budget must parse (an empty or null mapping is
+    # itself invalid: at least one limit is required whenever the key exists).
+    budget = _parse_budget(raw["budget"], source) if "budget" in raw else None
     return RunSettings(
         checkpointer=checkpointer,
         db_path=Path(db_path),
         max_retries=max_retries,
         retry_backoff_ms=retry_backoff_ms,
+        budget=budget,
     )
+
+
+def _parse_budget(raw: Any, source: Path) -> Budget:
+    """Validate one run.budget mapping into a Budget.
+
+    Both fields are optional but at least one must be present when the key is;
+    unknown keys are rejected like every other config key.
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{source}: run.budget must be a mapping")
+    unknown = set(raw) - _BUDGET_KEYS
+    if unknown:
+        raise ConfigError(f"{source}: unknown run.budget keys: {sorted(unknown)}")
+    cost_usd = raw.get("cost_usd")
+    steps = raw.get("steps")
+    cost_ok = isinstance(cost_usd, (int, float)) and not isinstance(cost_usd, bool) and cost_usd > 0
+    steps_ok = isinstance(steps, int) and not isinstance(steps, bool) and steps > 0
+    if cost_usd is not None and not cost_ok:
+        raise ConfigError(f"{source}: run.budget.cost_usd must be a positive number")
+    if steps is not None and not steps_ok:
+        raise ConfigError(f"{source}: run.budget.steps must be a positive integer")
+    if cost_usd is None and steps is None:
+        raise ConfigError(
+            f"{source}: run.budget requires at least one of 'cost_usd' or 'steps'"
+        )
+    return Budget(cost_usd=None if cost_usd is None else float(cost_usd), steps=steps)
 
 
 def load_config(path: Path | str, registry: dict[str, type[Workflow]]) -> ResolvedConfig:
