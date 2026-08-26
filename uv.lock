@@ -1400,6 +1400,7 @@ name = "ngen-weave-core"
 version = "0.1.3"
 source = { editable = "packages/ngen-weave-core" }
 dependencies = [
+    { name = "jsonschema" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "litellm" },
@@ -1409,6 +1410,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "jsonschema", specifier = ">=4.21" },
     { name = "langgraph", specifier = ">=0.2" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=2" },
     { name = "litellm", specifier = ">=1.40" },

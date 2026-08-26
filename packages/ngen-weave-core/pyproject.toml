@@ -5,6 +5,7 @@ description = "Core library for ngen-weave: durable human-in-the-loop AI workflo
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
+    "jsonschema>=4.21",
     "langgraph>=0.2",
     "langgraph-checkpoint-sqlite>=2",
     "litellm>=1.40",
