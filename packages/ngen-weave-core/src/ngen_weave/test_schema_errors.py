@@ -1,13 +1,13 @@
 """Tests for the friendly pydantic validation formatter."""
 
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ValidationError
 
 from ngen_weave.schema_errors import format_validation_error
 
 
-class Verdict(str, Enum):
+class Verdict(StrEnum):
     approve = "approve"
     reject = "reject"
 
