@@ -887,7 +887,6 @@ async def test_collected_fanin_is_deterministic_across_fresh_engines(tmp_path):
     assert prompts[0] == prompts[1]
 
 
-@pytest.mark.xfail(strict=True, reason="collect_order lands in v0.1.3")
 async def test_collect_order_sort_key_reorders_fanin(tmp_path):
     chain = _build_marker_fanin(
         {
@@ -900,8 +899,8 @@ async def test_collect_order_sort_key_reorders_fanin(tmp_path):
     result = await engine.run(chain, Root(text="hi"))
     assert result.status == "completed"
     collector_prompt = provider.calls[3][0][0]["content"]
-    # sort_key values are MARKER-1:3, MARKER-2:1, MARKER-3:2, so sorted
-    # order is MARKER-2 < MARKER-3 < MARKER-1.
+    # collect_order="sort_key": values are MARKER-1:3, MARKER-2:1,
+    # MARKER-3:2, so sorted order is MARKER-2 < MARKER-3 < MARKER-1.
     positions = [collector_prompt.index(f"MARKER-{i}") for i in (2, 3, 1)]
     assert positions == sorted(positions)
 

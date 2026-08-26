@@ -209,7 +209,8 @@ def _assembly_plan(
 
     Kinds: ("entry", None) reads the seeded composite input; ("single", src)
     passes one parent's dump through; ("slots", pairs) assembles named slots;
-    ("collect", field, srcs) appends parent dumps to the declared list field;
+    ("collect", field, srcs, sort_key) appends parent dumps to the declared
+    list field, stable-sorted by the collector's collect_order path;
     ("dispatch", senders) takes the output of whichever node dispatched here,
     since a dispatch target's sender is its effective parent.
     """
@@ -249,10 +250,34 @@ def _plan_form(
     if ordinary:
         dst_cls = wiring.nodes.get(dst)
         field_name = _single_list_field(dst_cls.input_type) if dst_cls is not None else None
-        return ("collect", field_name, [s for s, _f in ordinary])
+        order = dst_cls.collect_order if dst_cls is not None else None
+        return ("collect", field_name, [s for s, _f in ordinary], order)
     if any(s == START for s, _f in parents):
         return ("entry", None)
     return ("dispatch", sorted(senders.get(dst, ())))
+
+
+def _sort_value(dump: dict, path: str, node_path: str):
+    """Read a dotted path off one parent's output dump."""
+    value: Any = dump
+    try:
+        for segment in path.split("."):
+            value = value[int(segment)] if isinstance(value, list) else value[segment]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise DataError(f"{node_path}: collect_order {path!r} missing on an entry") from exc
+    return value
+
+
+def _collect_input(kind: tuple, state: dict, node_path: str) -> dict:
+    """Assemble collected fan-in: parent dumps in stable collect_order."""
+    field_name, sources, order = kind[1], kind[2], kind[3]
+    missing = [src for src in sources if state.get(src) is None]
+    if missing:
+        raise DataError(f"{node_path}: collector parents not yet written: {missing}")
+    entries = [state[src] for src in sources]
+    if order is not None:
+        entries.sort(key=lambda dump: _sort_value(dump, order, node_path))
+    return {field_name: entries}
 
 
 def _assemble_input(plan: dict[str, tuple], path: str, state: dict, node_path: str) -> Any:
@@ -274,11 +299,7 @@ def _assemble_input(plan: dict[str, tuple], path: str, state: dict, node_path: s
             raise DataError(f"{node_path}: slot sources not yet written: {missing}")
         return {field_name: state[src] for src, field_name in kind[1]}
     if form == "collect":
-        field_name, sources = kind[1], kind[2]
-        missing = [src for src in sources if state.get(src) is None]
-        if missing:
-            raise DataError(f"{node_path}: collector parents not yet written: {missing}")
-        return {field_name: [state[src] for src in sources]}
+        return _collect_input(kind, state, node_path)
     # dispatch: the sending node's validated output is the input
     last = state.get(_LAST_KEY)
     if last is None or last not in kind[1]:
