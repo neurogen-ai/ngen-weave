@@ -98,7 +98,12 @@ class Draft(Worker):
     description = "Draft a code review of the submitted diff."
     input_type = ReviewRequest
     output_type = DraftReview
-    prompt = "You are reviewing a code change. Write a concise review.\n\nDiff:\n{diff}\n"
+    prompt = (
+        "You are reviewing a code change. Write a concise review.\n\n"
+        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
+        '{{"review": "<your review>", "diff": <the diff text you were given>}}\n\n'
+        "Diff:\n{diff}\n"
+    )
 
     # The engine renders the prompt and parses the reply into output_type;
     # the reply carries only the review, so the diff is echoed locally.
@@ -145,7 +150,9 @@ class Finalize(Worker):
     output_type = ReviewedDiff
     artifacts = ("reviewed_diff",)
     prompt = (
-        "Apply the review to produce the final reviewed diff.\n"
+        "Apply the review notes to produce the final reviewed diff.\n"
+        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
+        '{{"reviewed_diff": "<the reviewed diff text>", "verdict": "<approve or reject>"}}\n'
         "\nVerdict: {verdict}\nReview notes: {review}\n\nDiff:\n{diff}\n"
     )
 

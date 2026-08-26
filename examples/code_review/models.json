@@ -2,7 +2,7 @@
     "defaultVariant": "example-model",
     "variants": {
         "example-model": {
-            "model": "ornith-ai/Ornith-1.5-9B-GGUF",
+            "model": "openai/ggml-org/GLM-4.7-Flash-GGUF:Q8_0",
             "api_base": "http://localhost:8080/v1",
             "api_key": "dummy"
         }
