@@ -84,6 +84,9 @@ class Workflow:
     output_type: ClassVar[type[BaseModel]]
     prompt: ClassVar[str | None] = None
     artifacts: ClassVar[Sequence[str]] = ()
+    # Collected fan-in only: dotted path sorted on when assembling this
+    # node's list input. None keeps edge-declaration order. See _check_multi_parent.
+    collect_order: ClassVar[str | None] = None
     # Intermediate user-defined base classes set this to skip import-time
     # validation they cannot satisfy; concrete leaves are always validated.
     _defer_validation: ClassVar[bool] = False
@@ -327,6 +330,11 @@ def _check_declarations(cls: type[Workflow]) -> None:
     if issubclass(cls, Human):
         _check_human_state(cls, path)
     _check_prompt_and_artifacts(cls, path)
+    if not (
+        getattr(cls, "collect_order", None) is None
+        or isinstance(cls.collect_order, str)
+    ):
+        raise ConfigError(f"{path}: collect_order must be None or a dotted path string")
 
 
 def _check_type_attrs(cls: type[Workflow], path: str) -> None:
@@ -673,6 +681,25 @@ def _check_collect_form(
         )
 
 
+def _resolve_schema_path(model: type[BaseModel], path: str) -> bool:
+    """Whether path resolves on model's fields; segments name fields or index lists."""
+    current: Any = model
+    for segment in path.split("."):
+        if isinstance(current, list) or get_origin(current) is list:
+            elem = get_args(current)[0] if get_origin(current) is list else current[0]
+            if not segment.isdigit():
+                return False
+            current = elem
+            continue
+        if not (isinstance(current, type) and issubclass(current, BaseModel)):
+            return False
+        field = current.model_fields.get(segment)
+        if field is None:
+            return False
+        current = field.annotation
+    return True
+
+
 def _check_multi_parent(
     w: _Wiring,
     cls: type[Workflow],
@@ -699,6 +726,18 @@ def _check_multi_parent(
         _check_slots_form(w, cls, path, dst, slots, child_cls.input_type)
     else:
         _check_collect_form(path, dst, len(ordinary), child_cls.input_type)
+        order = child_cls.collect_order
+        if order is not None:
+            offenders = [
+                workflow_class_path(w.nodes[src])
+                for src, _f in ordinary
+                if src in w.nodes and not _resolve_schema_path(w.nodes[src].output_type, order)
+            ]
+            if offenders:
+                raise ConfigError(
+                    f"{path}: collect_order {order!r} on {dst} does not resolve "
+                    f"against output_type of: {', '.join(offenders)}"
+                )
 
 
 def _check_fanin(w: _Wiring, cls: type[Workflow], path: str) -> None:

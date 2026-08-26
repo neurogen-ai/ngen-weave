@@ -36,7 +36,9 @@ class Out(BaseModel):
 GateOut = type("GateOut", (BaseModel,), {"__annotations__": {"pass": bool}})
 
 
-def make_worker(name: str, prompt: str | None = "do {text}", input_type=In, output_type=Out):
+def make_worker(
+    name: str, prompt: str | None = "do {text}", input_type=In, output_type=Out, **attrs
+):
     def run(self, input, ctx):
         return output_type(result="x")
 
@@ -49,6 +51,7 @@ def make_worker(name: str, prompt: str | None = "do {text}", input_type=In, outp
     }
     if prompt is not None:
         body["prompt"] = prompt
+    body.update(attrs)
     return type(name, (Worker,), body)
 
 
@@ -830,6 +833,112 @@ def test_collected_fan_in_passes():
             g.add_edge(reducer, END)
 
     validate_structure(Coll)
+
+
+def _collector_input(elem: type[BaseModel], count: int = 3) -> type[BaseModel]:
+    return type(
+        "ReduceInput",
+        (BaseModel,),
+        {"__annotations__": {"reviews": list[elem]}, "reviews": Field(min_length=count)},
+    )
+
+
+def _collect_fixture(reducer_name, parent_types, order=None):
+    """Deferred parents of the given output types feed one deferred collector."""
+    entry = make_worker(reducer_name + "Entry")
+    parents = [
+        make_worker(f"{reducer_name}P{i}", output_type=t) for i, t in enumerate(parent_types, 1)
+    ]
+    reducer = make_worker(
+        reducer_name + "Reducer",
+        prompt="reduce",
+        input_type=_collector_input(parent_types[0]),
+        output_type=Out,
+        collect_order=order,
+        _defer_validation=True,
+    )
+    return entry, parents, reducer
+
+
+def _collect_composite(entry, parents, reducer, name):
+    class Coll(Workflow):
+        input_type = In
+        output_type = Out
+
+        def build(self, g):
+            for n in (entry, *parents, reducer):
+                g.add_node(n)
+            g.add_edge(START, entry)
+            for p in parents:
+                g.add_edge(entry, p)
+            for p in parents:
+                g.add_edge(p, reducer)
+            g.add_edge(reducer, END)
+
+    Coll.__qualname__ = name
+    Coll.__name__ = name
+    return Coll
+
+
+class TextOut(BaseModel):
+    text: str
+
+
+class Inner(BaseModel):
+    name: str
+
+
+class ListOut(BaseModel):
+    items: list[Inner]
+
+
+def test_collect_order_valid_three_parent_passes():
+    entry, parents, reducer = _collect_fixture("CoOk", [TextOut] * 3, order="text")
+    validate_structure(_collect_composite(entry, parents, reducer, "CollOk"))
+
+
+def test_collect_order_all_parents_offend_names_every_parent():
+    entry, parents, reducer = _collect_fixture("CoBad", [Out] * 3, order="nope")
+    with pytest.raises(ConfigError) as exc_info:
+        validate_structure(_collect_composite(entry, parents, reducer, "Coll"))
+    msg = str(exc_info.value)
+    assert "'nope'" in msg and "Coll" in msg
+    for name in ("CoBadP1", "CoBadP2", "CoBadP3"):
+        assert name in msg
+
+
+def test_collect_order_names_exactly_one_offender():
+    entry, parents, reducer = _collect_fixture("CoMix", [Out, TextOut, TextOut], order="text")
+    with pytest.raises(ConfigError) as exc_info:
+        validate_structure(_collect_composite(entry, parents, reducer, "Coll"))
+    msg = str(exc_info.value)
+    assert "CoMixP1" in msg
+    assert "CoMixP2" not in msg and "CoMixP3" not in msg
+
+
+def test_collect_order_numeric_segment():
+    entry, parents, reducer = _collect_fixture("CoNum", [ListOut] * 3, order="items.0.name")
+    validate_structure(_collect_composite(entry, parents, reducer, "CollNum"))
+
+    entry2, parents2, reducer2 = _collect_fixture("CoNumX", [ListOut] * 3, order="items.x")
+    with pytest.raises(ConfigError, match="does not resolve"):
+        validate_structure(_collect_composite(entry2, parents2, reducer2, "Coll"))
+
+
+def test_collect_order_non_string_rejected():
+    def _run(self, input, ctx):
+        return Out(result="x")
+
+    with pytest.raises(ConfigError, match="collect_order must be None or a dotted path string"):
+
+        class Bad(Worker):
+            __module__ = __name__
+            prompt = "go"
+            input_type = In
+            output_type = Out
+            collect_order = 42  # type: ignore[assignment]
+
+            run = _run
 
 
 def test_arity_below_min_fails():
