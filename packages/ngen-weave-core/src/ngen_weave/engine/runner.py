@@ -78,6 +78,8 @@ from ngen_weave.workflow import (
     workflow_class_path,
 )
 
+# Module constants.
+
 # How much of the last model reply rides an exhausted AgentReplyError message.
 REPLY_EXCERPT_CHARS = 500
 # Reserved state keys: the seeded run input, which real node wrote last

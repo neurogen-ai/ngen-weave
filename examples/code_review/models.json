@@ -3,7 +3,7 @@
     "variants": {
         "example-model": {
             "model": "ggml-org/GLM-4.7-Flash-GGUF:Q8_0",
-            "api": "openai-compatible",
+            "api": "openai",
             "api_base": "http://localhost:8080/v1",
             "api_key": "dummy"
         }

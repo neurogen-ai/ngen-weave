@@ -14,8 +14,6 @@ from typing import Any
 from ngen_weave.errors import ConfigError, DataError, InfraError, ProviderError
 from ngen_weave.models.provider import Completion
 
-API_PREFIXES = {"openai-compatible": "openai/"}
-
 # Litellm provider prefixes; a model string starting with one is already
 # pre-prefixed, so an explicit api must not prepend another.
 _KNOWN_PROVIDER_PREFIXES = frozenset(
@@ -66,10 +64,10 @@ class ModelRegistry:
             if not isinstance(entry, dict) or "model" not in entry:
                 raise ConfigError(f"{path}: variant {name!r} needs at least a 'model' key")
             api = entry.get("api")
-            if api is not None and api not in API_PREFIXES:
-                accepted = ", ".join(sorted(API_PREFIXES))
+            if api is not None and (not isinstance(api, str) or not api):
                 raise ConfigError(
-                    f"{path}: variant {name!r} has unknown api {api!r}; accepted values: {accepted}"
+                    f"{path}: variant {name!r} has invalid api {api!r}; "
+                    "expected a provider prefix such as 'openai'"
                 )
         self.variants = variants
 
@@ -95,7 +93,7 @@ class ModelRegistry:
             raise ConfigError(f"{self.path}: unknown variant {name!r}")
         copy = dict(entry)
         api = copy.pop("api", None)
-        prefix = API_PREFIXES.get(api) if api else None
+        prefix = f"{api.rstrip('/')}/" if isinstance(api, str) and api else None
         already_prefixed = any(copy["model"].startswith(p) for p in _KNOWN_PROVIDER_PREFIXES)
         if prefix and not already_prefixed:
             copy["model"] = prefix + copy["model"]

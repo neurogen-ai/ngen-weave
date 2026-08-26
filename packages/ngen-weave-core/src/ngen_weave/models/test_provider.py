@@ -81,35 +81,43 @@ class TestModelRegistry:
             tmp_path,
             {
                 "model": "qwen3:8b",
-                "api": "openai-compatible",
+                "api": "openai",
                 "api_base": "http://localhost:8080/v1",
             },
         ).kwargs()
         assert kwargs["model"] == "openai/qwen3:8b"
         assert "api" not in kwargs
 
+    def test_api_key_without_slash_gets_one_appended(self, tmp_path: Path) -> None:
+        kwargs = self._registry(tmp_path, {"model": "m", "api": "openai"}).kwargs()
+        assert kwargs["model"] == "openai/m"
+
+    def test_api_key_with_trailing_slash_is_used_verbatim(self, tmp_path: Path) -> None:
+        kwargs = self._registry(tmp_path, {"model": "m", "api": "openai/"}).kwargs()
+        assert kwargs["model"] == "openai/m"
+
     def test_api_key_with_prefixed_model_passes_through(self, tmp_path: Path) -> None:
-        kwargs = self._registry(
-            tmp_path, {"model": "openai/qwen3:8b", "api": "openai-compatible"}
-        ).kwargs()
+        kwargs = self._registry(tmp_path, {"model": "openai/qwen3:8b", "api": "openai"}).kwargs()
         assert kwargs["model"] == "openai/qwen3:8b"
 
     def test_legacy_prefixed_model_without_api_is_unchanged(self, models_file: Path) -> None:
         assert ModelRegistry.load(models_file).kwargs("haiku") == {"model": "test/haiku"}
 
     def test_unknown_api_value_is_config_error(self, tmp_path: Path) -> None:
-        with pytest.raises(
-            ConfigError, match="variant 'local' has unknown api 'ollama'"
-        ) as excinfo:
-            self._registry(tmp_path, {"model": "m", "api": "ollama"})
-        assert "accepted values" in str(excinfo.value)
+        with pytest.raises(ConfigError, match="variant 'local' has invalid api ''") as excinfo:
+            self._registry(tmp_path, {"model": "m", "api": ""})
+        assert "expected a provider prefix such as 'openai'" in str(excinfo.value)
+
+    def test_non_string_api_is_config_error(self, tmp_path: Path) -> None:
+        with pytest.raises(ConfigError, match="invalid api"):
+            self._registry(tmp_path, {"model": "m", "api": 7})
 
     def test_api_prefixes_local_gguf_name(self, tmp_path: Path) -> None:
         kwargs = self._registry(
             tmp_path,
             {
                 "model": "ggml-org/GLM-4.7-Flash-GGUF:Q8_0",
-                "api": "openai-compatible",
+                "api": "openai",
                 "api_base": "http://localhost:8080/v1",
                 "api_key": "dummy",
             },
