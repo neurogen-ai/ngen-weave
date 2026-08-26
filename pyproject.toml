@@ -36,4 +36,5 @@ asyncio_mode = "auto"
 pythonpath = ["packages/ngen-weave-core"]
 markers = [
     "live: touches real provider SDK internals; excluded by default, run with -m live",
+    "conformance: RunService contract suite exercised by every backend implementation",
 ]
