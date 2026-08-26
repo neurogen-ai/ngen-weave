@@ -6,6 +6,7 @@ stack out of configuration and workflow discovery; nothing HTTP-specific.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -97,6 +98,8 @@ def build_stack(
     *,
     provider: CompletionProvider | None = None,
     project: str | None = None,
+    models_file: Path | None = None,
+    db_path: Path | None = None,
 ) -> AppStack:
     """Construct Engine, RunStore, artifact store, and the merged discovery map.
 
@@ -108,13 +111,20 @@ def build_stack(
             over the configured models file.
         project: Project name for content-addressed artifacts; None or empty
             means declared artifacts are dropped (resume/status never write).
+        models_file: Override for the LazyProvider's models.json location;
+            wins over both the config value and the default.
+        db_path: Override for the LangGraph checkpointer database path.
     """
     settings = config.run if config is not None else RunSettings()
+    if db_path is not None:
+        settings = dataclasses.replace(settings, db_path=db_path)
     store = RunStore(NGEN_WEAVE_DIR / "runs")
     artifacts = ArtifactStore(NGEN_WEAVE_DIR / "projects", project) if project else None
     if provider is None:
-        models_file = config.models_file if config is not None else Path("models.json")
-        provider = LazyProvider(lambda: default_provider(models_file))
+        resolved_models_file = models_file or (
+            config.models_file if config is not None else Path("models.json")
+        )
+        provider = LazyProvider(lambda: default_provider(resolved_models_file))
     engine = Engine(
         provider,
         store,
@@ -135,12 +145,16 @@ def build_service(
     config_path: Path | None = None,
     provider: CompletionProvider | None = None,
     project: str | None = None,
+    models_file: Path | None = None,
+    db_path: Path | None = None,
 ) -> RunService:
     """Assemble the default local RunService from configuration and discovery.
 
     Loads `config_path` when given, wires config, merged discovery, engine,
     and store through build_stack, and wraps them in LocalRunService. The
-    server package is imported lazily so stdio-only installs never need it.
+    optional models-file and checkpoint-db overrides win over any configured
+    values. The server package is imported lazily so stdio-only installs
+    never need it.
 
     Raises:
         ConfigError: Unknown keys or unresolvable workflow/model references
@@ -153,7 +167,13 @@ def build_service(
             "the local RunService requires the ngen-weave-server package; "
             "install ngen-weave-server or ngen-weave[server]"
         ) from exc
-    stack = build_stack(_load_config(config_path), provider=provider, project=project)
+    stack = build_stack(
+        _load_config(config_path),
+        provider=provider,
+        project=project,
+        models_file=models_file,
+        db_path=db_path,
+    )
     return LocalRunService(stack.engine, stack.store, stack.discovery_map)
 
 
