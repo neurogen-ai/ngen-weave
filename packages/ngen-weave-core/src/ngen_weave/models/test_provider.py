@@ -72,6 +72,51 @@ class TestModelRegistry:
         with pytest.raises(ConfigError, match=message):
             ModelRegistry(data, tmp_path / "models.json")
 
+    def _registry(self, tmp_path: Path, variants: dict) -> ModelRegistry:
+        data = {"defaultVariant": "local", "variants": {"local": variants}}
+        return ModelRegistry(data, tmp_path / "models.json")
+
+    def test_api_key_composes_litellm_prefix(self, tmp_path: Path) -> None:
+        kwargs = self._registry(
+            tmp_path,
+            {
+                "model": "qwen3:8b",
+                "api": "openai-compatible",
+                "api_base": "http://localhost:8080/v1",
+            },
+        ).kwargs()
+        assert kwargs["model"] == "openai/qwen3:8b"
+        assert "api" not in kwargs
+
+    def test_api_key_with_prefixed_model_passes_through(self, tmp_path: Path) -> None:
+        kwargs = self._registry(
+            tmp_path, {"model": "openai/qwen3:8b", "api": "openai-compatible"}
+        ).kwargs()
+        assert kwargs["model"] == "openai/qwen3:8b"
+
+    def test_legacy_prefixed_model_without_api_is_unchanged(self, models_file: Path) -> None:
+        assert ModelRegistry.load(models_file).kwargs("haiku") == {"model": "test/haiku"}
+
+    def test_unknown_api_value_is_config_error(self, tmp_path: Path) -> None:
+        with pytest.raises(
+            ConfigError, match="variant 'local' has unknown api 'ollama'"
+        ) as excinfo:
+            self._registry(tmp_path, {"model": "m", "api": "ollama"})
+        assert "accepted values" in str(excinfo.value)
+
+    def test_api_prefixes_local_gguf_name(self, tmp_path: Path) -> None:
+        kwargs = self._registry(
+            tmp_path,
+            {
+                "model": "ggml-org/GLM-4.7-Flash-GGUF:Q8_0",
+                "api": "openai-compatible",
+                "api_base": "http://localhost:8080/v1",
+                "api_key": "dummy",
+            },
+        ).kwargs()
+        assert kwargs["model"] == "openai/ggml-org/GLM-4.7-Flash-GGUF:Q8_0"
+        assert "api" not in kwargs
+
 
 def _fake_response(content="hello", prompt=11, total=33):
     """Stand-in for a litellm ModelResponse; only accessed attributes exist."""

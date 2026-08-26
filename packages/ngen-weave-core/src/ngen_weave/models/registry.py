@@ -14,6 +14,14 @@ from typing import Any
 from ngen_weave.errors import ConfigError, DataError, InfraError, ProviderError
 from ngen_weave.models.provider import Completion
 
+API_PREFIXES = {"openai-compatible": "openai/"}
+
+# Litellm provider prefixes; a model string starting with one is already
+# pre-prefixed, so an explicit api must not prepend another.
+_KNOWN_PROVIDER_PREFIXES = frozenset(
+    {"openai/", "anthropic/", "google/", "azure/", "bedrock/", "ollama/", "huggingface/"}
+)
+
 _NOISY_LOGGERS = ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy")
 
 
@@ -57,6 +65,12 @@ class ModelRegistry:
         for name, entry in variants.items():
             if not isinstance(entry, dict) or "model" not in entry:
                 raise ConfigError(f"{path}: variant {name!r} needs at least a 'model' key")
+            api = entry.get("api")
+            if api is not None and api not in API_PREFIXES:
+                accepted = ", ".join(sorted(API_PREFIXES))
+                raise ConfigError(
+                    f"{path}: variant {name!r} has unknown api {api!r}; accepted values: {accepted}"
+                )
         self.variants = variants
 
     @classmethod
@@ -79,7 +93,13 @@ class ModelRegistry:
         entry = self.variants.get(name)
         if entry is None:
             raise ConfigError(f"{self.path}: unknown variant {name!r}")
-        return dict(entry)
+        copy = dict(entry)
+        api = copy.pop("api", None)
+        prefix = API_PREFIXES.get(api) if api else None
+        already_prefixed = any(copy["model"].startswith(p) for p in _KNOWN_PROVIDER_PREFIXES)
+        if prefix and not already_prefixed:
+            copy["model"] = prefix + copy["model"]
+        return copy
 
 
 class LiteLLMProvider:
