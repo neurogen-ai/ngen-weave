@@ -19,9 +19,7 @@ from pydantic import BaseModel
 
 from ngen_weave.provenance import ProvenanceRecord
 
-RunStatus = Literal[
-    "running", "waiting_human", "paused", "completed", "failed", "cancelled"
-]
+RunStatus = Literal["running", "waiting_human", "paused", "completed", "failed", "cancelled"]
 
 RUN_FILE_FORMAT = 1
 

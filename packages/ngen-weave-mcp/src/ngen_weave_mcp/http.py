@@ -53,9 +53,7 @@ def create_http_app(
 
     register_workflow_tools(server, merged_registry(), service, tool_timeout_s=tool_timeout_s)
 
-    session_manager = StreamableHTTPSessionManager(
-        app=server, json_response=True, stateless=True
-    )
+    session_manager = StreamableHTTPSessionManager(app=server, json_response=True, stateless=True)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):

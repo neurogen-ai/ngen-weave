@@ -66,9 +66,7 @@ async def test_denied_tool_fails_node_and_emits_exactly_one_record():
 
 
 async def test_fail_node_error_is_data_error_subclass():
-    gate = PermissionGate(
-        make_registry(), PermissionSet(allowed_tools=()), make_ctx([])
-    )
+    gate = PermissionGate(make_registry(), PermissionSet(allowed_tools=()), make_ctx([]))
     with pytest.raises(DataError):
         await gate.call("echo", {})
 

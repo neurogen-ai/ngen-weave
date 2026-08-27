@@ -107,16 +107,12 @@ class HarnessAgentExecutor:
                 detail = action["invalid"] if action else ""
                 last_reply = f"{completion.text}\n{detail}".strip()
                 messages.append({"role": "assistant", "content": completion.text})
-                messages.append(
-                    {"role": "user", "content": f"{detail}\n{_REPAIR_NUDGE}".strip()}
-                )
+                messages.append({"role": "user", "content": f"{detail}\n{_REPAIR_NUDGE}".strip()})
                 continue
             if action["tool_call"] is not None:
                 result = await gate.call(action["tool_call"]["name"], action["tool_call"]["args"])
                 messages.append({"role": "assistant", "content": completion.text})
-                messages.append(
-                    {"role": "user", "content": json.dumps({"tool_result": result})}
-                )
+                messages.append({"role": "user", "content": json.dumps({"tool_result": result})})
                 continue
             try:
                 return output_type.model_validate(action["output"])

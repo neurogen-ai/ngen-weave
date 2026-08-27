@@ -519,9 +519,7 @@ class Engine:
             self.store.set_status(run_id, "cancelled")
             self._cancel_flags.discard(run_id)
 
-    def _at_boundary(
-        self, run_file: RunFile, node_path: str, metadata: RunMetadata | None
-    ) -> bool:
+    def _at_boundary(self, run_file: RunFile, node_path: str, metadata: RunMetadata | None) -> bool:
         """Return True when the driver must stop before the next activation.
 
         Checks run in order -- cancel flag first, then budget, then observers

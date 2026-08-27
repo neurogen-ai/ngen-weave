@@ -183,9 +183,7 @@ def _parse_budget(raw: Any, source: Path) -> Budget:
     if steps is not None and not steps_ok:
         raise ConfigError(f"{source}: run.budget.steps must be a positive integer")
     if cost_usd is None and steps is None:
-        raise ConfigError(
-            f"{source}: run.budget requires at least one of 'cost_usd' or 'steps'"
-        )
+        raise ConfigError(f"{source}: run.budget requires at least one of 'cost_usd' or 'steps'")
     return Budget(cost_usd=None if cost_usd is None else float(cost_usd), steps=steps)
 
 

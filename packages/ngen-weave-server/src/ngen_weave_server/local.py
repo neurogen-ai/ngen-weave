@@ -85,9 +85,7 @@ class LocalRunService:
         without loading each stream whole. The O(records) listing cost is
         documented and accepted until profiling complains.
         """
-        found = summaries(
-            self.store.load(header.run_id) for header in self.store.list()
-        )
+        found = summaries(self.store.load(header.run_id) for header in self.store.list())
         if filters is not None:
             found = [summary for summary in found if filters.matches(summary)]
         return found

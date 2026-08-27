@@ -220,9 +220,7 @@ async def test_criterion_1_mcp_tool_pauses_at_human_then_resumes(
     from ngen_weave.wiring import build_service
 
     service = build_service(provider=FakeReplyProvider([approval]))
-    handle = await service.resume(
-        payload["run_id"], payload={"verdict": "approve", "notes": ""}
-    )
+    handle = await service.resume(payload["run_id"], payload={"verdict": "approve", "notes": ""})
     assert handle.status == "completed"
     final = await service.status(payload["run_id"])
     assert final.output == {"reviewed_diff": diff, "verdict": "approve"}
@@ -419,9 +417,7 @@ async def test_criterion_5_budget_pause_then_resume_after_raise(
     good_review = json.dumps({"review": "Looks good overall.", "diff": diff})
     _set_fake_replies(monkeypatch, tmp_path, [good_review])
 
-    async with stdio_session(
-        example_project, extra_args=["--config", str(config_file)]
-    ) as session:
+    async with stdio_session(example_project, extra_args=["--config", str(config_file)]) as session:
         result = await session.call_tool(TOOL_NAME, {"diff": diff}, read_timeout_seconds=120)
 
     assert result.is_error is False
@@ -450,9 +446,7 @@ async def test_criterion_5_budget_pause_then_resume_after_raise(
     assert final.output == {"reviewed_diff": diff, "verdict": "approve"}
 
 
-def test_criterion_3_completed_run_export_matches_serializer(
-    example_project, monkeypatch
-) -> None:
+def test_criterion_3_completed_run_export_matches_serializer(example_project, monkeypatch) -> None:
     """Criterion 3: a completed code_review run exports faithfully.
 
     Drives the example to completion through the CLI, exports with
@@ -469,20 +463,24 @@ def test_criterion_3_completed_run_export_matches_serializer(
     draft_reply = json.dumps({"review": "Looks good overall.", "diff": diff})
     finalize_reply = json.dumps({"reviewed_diff": diff, "verdict": "approve"})
     provider = FakeProvider(replies=[draft_reply, finalize_reply])
-    monkeypatch.setattr(
-        "ngen_weave_cli.context.default_provider", lambda models_file: provider
-    )
+    monkeypatch.setattr("ngen_weave_cli.context.default_provider", lambda models_file: provider)
 
     launched = runner.invoke(
         app,
-        ["run", WORKFLOW, "-i", str(example_project / "request.json"), "-c",
-         str(example_project / "ngw.yaml")],
+        [
+            "run",
+            WORKFLOW,
+            "-i",
+            str(example_project / "request.json"),
+            "-c",
+            str(example_project / "ngw.yaml"),
+        ],
     )
     assert launched.exit_code == 0, launched.output
     assert "status completed" in launched.output
     prefix = "run "
     run_id = next(
-        line[len(prefix):] for line in launched.output.splitlines() if line.startswith(prefix)
+        line[len(prefix) :] for line in launched.output.splitlines() if line.startswith(prefix)
     )
 
     export = runner.invoke(app, ["export-run", run_id])
@@ -513,5 +511,3 @@ def test_criterion_3_completed_run_export_matches_serializer(
 
     computed = dump_run_json(RunStore(NGEN_WEAVE_DIR / "runs").load(run_id))
     assert export.stdout_bytes == computed
-
-

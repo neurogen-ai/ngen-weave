@@ -123,18 +123,14 @@ async def test_list_runs_filters_through_the_client(tmp_path):
     waiting = make_review_flow(human, {"approve": fin}, name="FlowCliL")
     done_path = workflow_class_path(done)
     waiting_path = workflow_class_path(waiting)
-    app = make_app(
-        tmp_path, ['{"text":"one"}'], {done_path: done, waiting_path: waiting}
-    )
+    app = make_app(tmp_path, ['{"text":"one"}'], {done_path: done, waiting_path: waiting})
 
     async with make_service(app) as service:
         completed = await service.launch(done_path, Root(text="a"))
         paused = await service.launch(waiting_path, Root(text="b"))
 
         everything = await service.list_runs()
-        assert sorted(s.run_id for s in everything) == sorted(
-            [completed.run_id, paused.run_id]
-        )
+        assert sorted(s.run_id for s in everything) == sorted([completed.run_id, paused.run_id])
         assert all(s.waiting_on_human for s in everything if s.run_id == paused.run_id)
 
         by_workflow = await service.list_runs(RunFilters(workflow=done_path))

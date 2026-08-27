@@ -118,17 +118,13 @@ async def test_list_runs_filters_by_workflow_and_status(service):
     done_path = workflow_class_path(done)
     waiting_path = workflow_class_path(waiting_flow)
     # One reply serves both: the chain call; the flow makes no model calls while waiting.
-    svc = service(
-        ['{"text":"one"}'], {done_path: done, waiting_path: waiting_flow}
-    )
+    svc = service(['{"text":"one"}'], {done_path: done, waiting_path: waiting_flow})
 
     completed = await svc.launch(done_path, Root(text="a"))
     paused = await svc.launch(waiting_path, Root(text="b"))
 
     everything = await svc.list_runs()
-    assert sorted(s.run_id for s in everything) == sorted(
-        [completed.run_id, paused.run_id]
-    )
+    assert sorted(s.run_id for s in everything) == sorted([completed.run_id, paused.run_id])
 
     by_workflow = await svc.list_runs(RunFilters(workflow=done_path))
     assert [s.run_id for s in by_workflow] == [completed.run_id]

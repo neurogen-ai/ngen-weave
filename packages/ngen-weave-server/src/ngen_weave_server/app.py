@@ -73,13 +73,10 @@ async def server_error(request: Request, exc: NgWeaveError) -> JSONResponse:
     return _error_response(500, exc)
 
 
-async def request_validation(
-    request: Request, exc: RequestValidationError
-) -> JSONResponse:
+async def request_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
     """Map malformed request bodies onto 400 with per-field lines."""
     lines = "\n".join(
-        f"  - {'.'.join(str(part) for part in err['loc'])}: {err['msg']}"
-        for err in exc.errors()
+        f"  - {'.'.join(str(part) for part in err['loc'])}: {err['msg']}" for err in exc.errors()
     )
     return JSONResponse(
         status_code=400,
@@ -139,9 +136,7 @@ def create_app(
         retry_backoff_ms=settings.retry_backoff_ms,
         settings=settings,
     )
-    registry = (
-        dict(discovery_map) if discovery_map is not None else merged_registry()
-    )
+    registry = dict(discovery_map) if discovery_map is not None else merged_registry()
     service = LocalRunService(engine, store, registry)
 
     app = FastAPI()
@@ -177,13 +172,9 @@ def create_app(
         return Response(status_code=204)
 
     @app.get("/runs")
-    async def list_runs(
-        workflow: str | None = None, status: RunStatus | None = None
-    ) -> list[dict]:
+    async def list_runs(workflow: str | None = None, status: RunStatus | None = None) -> list[dict]:
         """Summaries of stored runs, filtered by workflow and/or status."""
-        found = await service.list_runs(
-            RunFilters(workflow=workflow, status=status)
-        )
+        found = await service.list_runs(RunFilters(workflow=workflow, status=status))
         return [dataclasses.asdict(summary) for summary in found]
 
     @app.post("/runs/{run_id}/notes", status_code=204)

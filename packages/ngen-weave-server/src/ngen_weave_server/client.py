@@ -58,9 +58,7 @@ class HttpRunService:
 
     async def resume(self, run_id: str, payload: dict | None = None) -> RunHandle:
         """Continue run_id on the remote server from its checkpoint."""
-        response = await self._request(
-            "POST", f"/runs/{run_id}/resume", json={"payload": payload}
-        )
+        response = await self._request("POST", f"/runs/{run_id}/resume", json={"payload": payload})
         data = response.json()
         return RunHandle(run_id=data["run_id"], status=data["status"])
 
@@ -73,9 +71,7 @@ class HttpRunService:
         """Request cancellation at the next activation boundary (204)."""
         await self._request("POST", f"/runs/{run_id}/cancel")
 
-    async def list_runs(
-        self, filters: RunFilters | None = None
-    ) -> list[RunSummary]:
+    async def list_runs(self, filters: RunFilters | None = None) -> list[RunSummary]:
         """Summaries of stored runs on the remote server, filtered by query params."""
         params = {}
         if filters is not None:

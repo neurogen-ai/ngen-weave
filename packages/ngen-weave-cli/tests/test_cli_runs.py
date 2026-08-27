@@ -109,9 +109,7 @@ def test_runs_filters_by_workflow_and_status(workflow_module, tmp_path):
     echo_id = _seed_run(tmp_path, f"{FIXTURE_MODULE}.Echo", "completed")
     other_id = _seed_run(tmp_path, "other.Workflow", "running")
 
-    by_workflow = runner.invoke(
-        app, ["runs", "--workflow", f"{FIXTURE_MODULE}.Echo"]
-    )
+    by_workflow = runner.invoke(app, ["runs", "--workflow", f"{FIXTURE_MODULE}.Echo"])
     assert by_workflow.exit_code == 0, by_workflow.stderr
     ids = [line.split()[0] for line in by_workflow.output.splitlines()]
     assert ids == [echo_id]

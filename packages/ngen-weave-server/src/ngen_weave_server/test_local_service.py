@@ -181,9 +181,7 @@ async def test_list_runs_filters_by_workflow_and_status(tmp_path):
     waiting = make_review_flow(human, {"approve": fin}, name="FlowL")
 
     service, _ = make_service(tmp_path, ['{"text":"one"}'])
-    service.discovery_map.update(
-        {"fixtures.ChainD": done, "fixtures.FlowL": waiting}
-    )
+    service.discovery_map.update({"fixtures.ChainD": done, "fixtures.FlowL": waiting})
     completed_handle = await service.launch("fixtures.ChainD", Root(text="a"))
     waiting_handle = await service.launch("fixtures.FlowL", Root(text="b"))
 
@@ -242,9 +240,7 @@ def make_app(tmp_path, replies, discovery_map):
 
 def make_client(app) -> httpx.AsyncClient:
     """Async client speaking to the ASGI app in-process."""
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    )
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
 async def test_http_launch_to_completion_and_notes(tmp_path):
@@ -255,9 +251,7 @@ async def test_http_launch_to_completion_and_notes(tmp_path):
     app = make_app(tmp_path, ['{"text":"one"}', '{"text":"two"}'], {path: chain})
 
     async with make_client(app) as client:
-        response = await client.post(
-            "/runs", json={"workflow": path, "input": {"text": "hi"}}
-        )
+        response = await client.post("/runs", json={"workflow": path, "input": {"text": "hi"}})
         assert response.status_code == 200
         handle = response.json()
         assert handle["status"] == "completed"
@@ -284,9 +278,7 @@ async def test_http_resume_with_json_payload_completes(tmp_path):
     app = make_app(tmp_path, ['{"text":"done"}'], {path: flow})
 
     async with make_client(app) as client:
-        response = await client.post(
-            "/runs", json={"workflow": path, "input": {"text": "hi"}}
-        )
+        response = await client.post("/runs", json={"workflow": path, "input": {"text": "hi"}})
         run_id = response.json()["run_id"]
         assert response.json()["status"] == "waiting_human"
 
@@ -300,9 +292,7 @@ async def test_http_resume_with_json_payload_completes(tmp_path):
 async def test_http_unknown_run_is_404_with_error_envelope(tmp_path):
     w = make_worker("WUnk", Root, Final)
     chain = make_chain([w], Root, Final, name="ChainUnk")
-    app = make_app(
-        tmp_path, [], {workflow_class_path(chain): chain}
-    )
+    app = make_app(tmp_path, [], {workflow_class_path(chain): chain})
 
     async with make_client(app) as client:
         for method, url, json_body in [
@@ -343,9 +333,7 @@ async def test_http_list_filters_through_query_params(tmp_path):
     waiting = make_review_flow(human, {"approve": fin}, name="FlowHttpL")
     done_path = workflow_class_path(done)
     waiting_path = workflow_class_path(waiting)
-    app = make_app(
-        tmp_path, ['{"text":"one"}'], {done_path: done, waiting_path: waiting}
-    )
+    app = make_app(tmp_path, ['{"text":"one"}'], {done_path: done, waiting_path: waiting})
 
     async with make_client(app) as client:
         completed = (
@@ -373,9 +361,7 @@ async def test_http_export_bytes_equal_dump_run_json(tmp_path):
     app = make_app(tmp_path, ['{"text":"one"}', '{"text":"two"}'], {path: chain})
 
     async with make_client(app) as client:
-        response = await client.post(
-            "/runs", json={"workflow": path, "input": {"text": "hi"}}
-        )
+        response = await client.post("/runs", json={"workflow": path, "input": {"text": "hi"}})
         run_id = response.json()["run_id"]
 
         response = await client.get(f"/runs/{run_id}/export")

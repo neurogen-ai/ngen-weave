@@ -181,6 +181,7 @@ def test_unknown_action_rejected_naming_class():
 
 # --- engine wiring: evaluation at the activation boundary ---------------------
 
+
 class Text(BaseModel):
     text: str
 
@@ -255,11 +256,7 @@ def model_calls_on(rf, leaf) -> int:
     """Count model_call records attributed to one leaf's activation path."""
     leaf_path = workflow_class_path(leaf)
     return len(
-        [
-            r
-            for r in rf.records
-            if r.kind == "model_call" and r.node_path.endswith(leaf_path)
-        ]
+        [r for r in rf.records if r.kind == "model_call" and r.node_path.endswith(leaf_path)]
     )
 
 

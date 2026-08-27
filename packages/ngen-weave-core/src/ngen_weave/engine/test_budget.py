@@ -99,9 +99,7 @@ def model_calls_on(rf, leaf: type[Workflow]) -> int:
 def test_run_result_waiting_defaults_and_carries_budget_pause() -> None:
     bare = RunResult("r1", "completed", None)
     assert bare.waiting is None
-    waiting = RunResult(
-        "r1", "paused", None, {"node_path": "a.B", "reason": "budget_exhausted"}
-    )
+    waiting = RunResult("r1", "paused", None, {"node_path": "a.B", "reason": "budget_exhausted"})
     assert waiting.waiting == {"node_path": "a.B", "reason": "budget_exhausted"}
 
 
@@ -115,9 +113,7 @@ async def test_cost_breach_pauses_mid_chain_with_one_record(tmp_path):
     chain = make_chain([w1, w2, w3], Root, Final)
     provider = FakeProvider(REPLIES)
     # call costs: ~0.114 then ~0.115 -> cap crossed by the second activation
-    engine = make_engine(
-        tmp_path, settings=make_settings(Budget(cost_usd=0.2)), provider=provider
-    )
+    engine = make_engine(tmp_path, settings=make_settings(Budget(cost_usd=0.2)), provider=provider)
 
     result = await engine.run(chain, Root(text="hi"))
 
@@ -261,9 +257,7 @@ async def test_double_cancel_idempotent_and_terminal_noop(tmp_path):
     engine.cancel(result.run_id)
     assert engine.store.load(result.run_id).status == "cancelled"
 
-    done_chain = make_chain(
-        [make_worker("Dcl2", Root, Final)], Root, Final, name="DoneCancelChain"
-    )
+    done_chain = make_chain([make_worker("Dcl2", Root, Final)], Root, Final, name="DoneCancelChain")
     finished = await make_engine(tmp_path).run(done_chain, Root(text="go"))
     assert finished.status == "completed"
     engine.cancel(finished.run_id)  # terminal runs are untouched
@@ -278,6 +272,7 @@ async def test_depth_two_activation_breach_pauses_at_composite_boundary_and_resu
     w2 = make_worker("Ncw2", Piece, Piece)
     w3 = make_worker("Ncw3", Piece, Final)
     inner = make_composite([w1, w2], Root, Piece, name="InnerComp")
+
     def outer_build(self, g):
         g.add_node(inner)
         g.add_node(w3)

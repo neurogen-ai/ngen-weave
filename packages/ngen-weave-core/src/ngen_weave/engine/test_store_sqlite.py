@@ -93,8 +93,7 @@ class TestTotalsAndCommittedVisibility:
         # the crash-consistent window a killed process leaves behind.
         raw = sqlite3.connect(_db_path(tmp_path / "runs"))
         rows = raw.execute(
-            "SELECT seq, node_path, kind, payload_json FROM records "
-            "WHERE run_id = ? ORDER BY seq",
+            "SELECT seq, node_path, kind, payload_json FROM records WHERE run_id = ? ORDER BY seq",
             (run_id,),
         ).fetchall()
         raw.close()

@@ -60,12 +60,8 @@ def service(request, tmp_path):
     HttpRunService speaking to the ASGI app over identical tmp dirs.
     """
 
-    def build(
-        replies: list[str], discovery_map: dict[str, type[Workflow]]
-    ) -> RunService:
-        factory = (
-            make_local_service if request.param == "local" else make_http_service
-        )
+    def build(replies: list[str], discovery_map: dict[str, type[Workflow]]) -> RunService:
+        factory = make_local_service if request.param == "local" else make_http_service
         return factory(tmp_path, replies, discovery_map)
 
     return build

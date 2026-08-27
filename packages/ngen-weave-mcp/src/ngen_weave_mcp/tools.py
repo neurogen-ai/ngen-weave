@@ -48,14 +48,12 @@ def register_workflow_tools(
     for path, wf in workflows.items():
         if not wf.description:
             raise ConfigError(
-                f"{path}: workflow has no description; one is required to expose "
-                "it as an MCP tool"
+                f"{path}: workflow has no description; one is required to expose it as an MCP tool"
             )
         name = tool_name(path)
         if name in registry:
             raise ConfigError(
-                f"MCP tool name collision: {registry[name][0]} and {path} both "
-                f"sanitize to '{name}'"
+                f"MCP tool name collision: {registry[name][0]} and {path} both sanitize to '{name}'"
             )
         registry[name] = (path, wf)
 
@@ -91,9 +89,7 @@ def register_workflow_tools(
         handle = await service.launch(path, model)
         return await _await_run(handle.run_id, wf, service, tool_timeout_s)
 
-    server.add_request_handler(
-        "tools/list", types.PaginatedRequestParams, on_list_tools
-    )
+    server.add_request_handler("tools/list", types.PaginatedRequestParams, on_list_tools)
     server.add_request_handler("tools/call", types.CallToolRequestParams, on_call_tool)
 
 
@@ -151,10 +147,7 @@ def _parked_node(file) -> str:
     for record in reversed(file.records):
         if record.kind in {"budget_exhausted", "observer_firing"} and record.node_path:
             return record.node_path
-        if (
-            record.kind == "node_activation"
-            and record.payload.get("status") == "waiting_human"
-        ):
+        if record.kind == "node_activation" and record.payload.get("status") == "waiting_human":
             return record.node_path
     return ""
 

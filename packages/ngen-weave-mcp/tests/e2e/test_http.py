@@ -72,9 +72,7 @@ def review_diff() -> str:
     return json.loads((EXAMPLE_DIR / "request.json").read_text())["diff"]
 
 
-async def test_http_run_completes_via_tool_call(
-    example_project, tmp_path, monkeypatch, _discovery
-):
+async def test_http_run_completes_via_tool_call(example_project, tmp_path, monkeypatch, _discovery):
     diff = review_diff()
     # Store and checkpoint paths are cwd-anchored; stay in the project root
     # for the whole test so the served stack and the resume service agree.
@@ -97,19 +95,15 @@ async def test_http_run_completes_via_tool_call(
         streamable_http_client(url) as (read_stream, write_stream),
         ClientSession(read_stream, write_stream) as session,
     ):
-            await session.initialize()
-            listing = await session.list_tools()
-            by_name = {t.name: t for t in listing.tools}
-            assert TOOL_NAME in by_name
-            tool = by_name[TOOL_NAME]
-            assert tool.description == (
-                "Code review: draft, gate, human approval, finalize."
-            )
-            assert tool.input_schema["properties"].keys() == {"diff"}
+        await session.initialize()
+        listing = await session.list_tools()
+        by_name = {t.name: t for t in listing.tools}
+        assert TOOL_NAME in by_name
+        tool = by_name[TOOL_NAME]
+        assert tool.description == ("Code review: draft, gate, human approval, finalize.")
+        assert tool.input_schema["properties"].keys() == {"diff"}
 
-            result = await session.call_tool(
-                TOOL_NAME, {"diff": diff}, read_timeout_seconds=120
-            )
+        result = await session.call_tool(TOOL_NAME, {"diff": diff}, read_timeout_seconds=120)
 
     assert result.is_error is False
     assert result.structured_content == {
@@ -137,8 +131,8 @@ async def test_http_human_pause_returns_run_id_then_resumes(
         streamable_http_client(url) as (read_stream, write_stream),
         ClientSession(read_stream, write_stream) as session,
     ):
-            await session.initialize()
-            result = await session.call_tool(TOOL_NAME, {"diff": diff})
+        await session.initialize()
+        result = await session.call_tool(TOOL_NAME, {"diff": diff})
 
     assert result.is_error is False
     payload = json.loads(result.content[0].text)

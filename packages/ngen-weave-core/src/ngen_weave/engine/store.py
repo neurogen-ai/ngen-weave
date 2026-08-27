@@ -192,9 +192,10 @@ class RunStore:
             ConfigError: Unknown run id.
         """
         with self._conn:
-            if self._conn.execute(
-                "SELECT 1 FROM runs WHERE run_id = ?", (run_id,)
-            ).fetchone() is None:
+            if (
+                self._conn.execute("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+                is None
+            ):
                 raise ConfigError(f"unknown run: {run_id}")
             self._conn.execute(
                 """

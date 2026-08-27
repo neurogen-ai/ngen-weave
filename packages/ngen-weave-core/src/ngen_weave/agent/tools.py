@@ -53,9 +53,7 @@ class ToolRegistry:
         try:
             Draft202012Validator.check_schema(spec.parameters_schema)
         except Exception as exc:
-            raise ConfigError(
-                f"tool {spec.name!r} has invalid parameters_schema: {exc}"
-            ) from exc
+            raise ConfigError(f"tool {spec.name!r} has invalid parameters_schema: {exc}") from exc
         self._specs[spec.name] = spec
 
     def specs(self) -> tuple[ToolSpec, ...]:

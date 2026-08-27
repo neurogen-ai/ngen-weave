@@ -69,6 +69,7 @@ def make_human(name: str):
 
 def make_pause_flow(name: str, human) -> type[Workflow]:
     """Single-Human root workflow (START -> human -> END) that parks at once."""
+
     def build(self, g):
         g.add_node(human)
         g.add_edge(START, human)
@@ -172,9 +173,7 @@ async def test_list_tools_reports_one_entry_per_workflow(tmp_path):
 
 
 async def test_completing_call_returns_validated_output(tmp_path):
-    echo, _, _, service, _ = build_fixtures(
-        tmp_path, replies=[json.dumps({"text": "from-model"})]
-    )
+    echo, _, _, service, _ = build_fixtures(tmp_path, replies=[json.dumps({"text": "from-model"})])
 
     result = await call_tool(service, {ECHO_KEY: echo}, tool_name(ECHO_KEY), {"text": "hello"})
 
@@ -230,9 +229,7 @@ async def test_timeout_returns_error_naming_resumable_run(monkeypatch, tmp_path)
             return RunHandle(run_id="run-stuck", status="running")
 
         async def status(self, run_id) -> RunFile:
-            return RunFile(
-                format=1, run_id=run_id, workflow="x", status="running", input={}
-            )
+            return RunFile(format=1, run_id=run_id, workflow="x", status="running", input={})
 
     monkeypatch.setattr("ngen_weave_mcp.tools.POLL_INTERVAL_S", 0.001)
     echo, _, _, _, _ = build_fixtures(tmp_path)
@@ -267,9 +264,7 @@ def test_sanitized_collision_names_both_paths():
     second = make_worker("CollisionTwo", Root, Final)
     # Dots -> hyphens only: these two distinct paths sanitize identically.
     with pytest.raises(ConfigError, match=r"one\.two\.Twin.*one-two\.Twin"):
-        register_workflow_tools(
-            Server("x"), {"one.two.Twin": first, "one-two.Twin": second}, None
-        )
+        register_workflow_tools(Server("x"), {"one.two.Twin": first, "one-two.Twin": second}, None)
 
 
 def test_poll_interval_is_engine_specified_quarter_second():

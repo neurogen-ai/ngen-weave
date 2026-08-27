@@ -77,9 +77,7 @@ def main(argv: list[str] | None = None) -> None:
     async def serve() -> None:
         with contextlib.suppress(KeyboardInterrupt):
             async with stdio_server_module.stdio_server() as (read_stream, write_stream):
-                await server.run(
-                    read_stream, write_stream, server.create_initialization_options()
-                )
+                await server.run(read_stream, write_stream, server.create_initialization_options())
 
     asyncio.run(serve())
 

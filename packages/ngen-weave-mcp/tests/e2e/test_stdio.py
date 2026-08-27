@@ -75,15 +75,11 @@ async def test_stdio_run_completes_via_tool_call(example_project, fake_replies):
         by_name = {t.name: t for t in listing.tools}
         assert TOOL_NAME in by_name
         tool = by_name[TOOL_NAME]
-        assert tool.description == (
-            "Code review: draft, gate, human approval, finalize."
-        )
+        assert tool.description == ("Code review: draft, gate, human approval, finalize.")
         assert tool.input_schema["properties"].keys() == {"diff"}
 
         diff = json.loads((EXAMPLE_DIR / "request.json").read_text())["diff"]
-        result = await session.call_tool(
-            TOOL_NAME, {"diff": diff}, read_timeout_seconds=120
-        )
+        result = await session.call_tool(TOOL_NAME, {"diff": diff}, read_timeout_seconds=120)
 
     assert result.is_error is False
     assert result.structured_content == {

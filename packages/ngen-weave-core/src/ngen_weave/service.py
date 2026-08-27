@@ -81,10 +81,7 @@ class RunFilters:
 
     def matches(self, summary: RunSummary) -> bool:
         """Return True when `summary` satisfies every set filter field."""
-        return (
-            self.workflow in (None, summary.workflow)
-            and self.status in (None, summary.status)
-        )
+        return self.workflow in (None, summary.workflow) and self.status in (None, summary.status)
 
 
 class RunService(Protocol):
@@ -114,9 +111,7 @@ def summaries(files: Iterable[RunFile]) -> list[RunSummary]:
 
 
 def _summary(file: RunFile) -> RunSummary:
-    started_at = file.started_at or next(
-        (record.ts for record in file.records if record.ts), ""
-    )
+    started_at = file.started_at or next((record.ts for record in file.records if record.ts), "")
     return RunSummary(
         run_id=file.run_id,
         workflow=file.workflow,

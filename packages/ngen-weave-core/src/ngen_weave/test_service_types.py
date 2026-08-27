@@ -51,9 +51,7 @@ class TestSummariesProjection:
             _record("r1", 1, "node_activation", {"status": "running"}),
             _record("r1", 2, "model_call", {"variant": "s", "cost_usd": 0.25}),
             _record("r1", 3, "model_call", {"variant": "s", "cost_usd": 0.10}),
-            _record(
-                "r1", 4, "artifact_write", {"cost_usd": 999}
-            ),  # non-model_call cost ignored
+            _record("r1", 4, "artifact_write", {"cost_usd": 999}),  # non-model_call cost ignored
             _record("r1", 5, "model_call", {"variant": "s"}),  # missing cost counts as 0
         ]
         summary = summaries([_file("r1", records=records)])[0]
@@ -107,9 +105,7 @@ class TestRunFilters:
             s.run_id for s in self._summaries() if RunFilters(workflow="m.Workflow").matches(s)
         ]
         mismatches = [
-            s.run_id
-            for s in self._summaries()
-            if RunFilters(workflow="other.Workflow").matches(s)
+            s.run_id for s in self._summaries() if RunFilters(workflow="other.Workflow").matches(s)
         ]
         assert matches == ["a", "b", "c"]
         assert mismatches == []
@@ -128,9 +124,7 @@ class TestRunFilters:
         assert by_filters["cancelled"] == []
 
     def test_combined_filters_must_both_match(self):
-        assert RunFilters(workflow="m.Workflow", status="completed").matches(
-            self._summaries()[1]
-        )
+        assert RunFilters(workflow="m.Workflow", status="completed").matches(self._summaries()[1])
         assert not RunFilters(workflow="m.Workflow", status="cancelled").matches(
             self._summaries()[0]
         )

@@ -35,10 +35,7 @@ def _human_flow(name: str):
 def _waiting_artifact(run_file) -> str:
     """Return the artifact path recorded at the most recent waiting activation."""
     for record in reversed(run_file.records):
-        if (
-            record.kind == "node_activation"
-            and record.payload.get("status") == "waiting_human"
-        ):
+        if record.kind == "node_activation" and record.payload.get("status") == "waiting_human":
             return record.payload["artifact"]
     raise AssertionError("run never reached waiting_human")
 
@@ -56,9 +53,7 @@ def _normalized(records: list[ProvenanceRecord]) -> list[tuple]:
             payload["artifact"] = Path(payload["artifact"]).name
         if isinstance(payload.get("metadata"), dict):
             payload["metadata"] = {
-                key: value
-                for key, value in payload["metadata"].items()
-                if key != "elapsed_ms"
+                key: value for key, value in payload["metadata"].items() if key != "elapsed_ms"
             }
         rows.append((record.kind, record.node_path, json.dumps(payload, sort_keys=True)))
     return rows

@@ -105,8 +105,12 @@ async def test_call_rejects_schema_violations_with_data_error():
         ToolSpec(
             name="lookup",
             description="",
-            parameters_schema={"type": "object", "properties": {"q": {"type": "string"}},
-                               "required": ["q"], "additionalProperties": False},
+            parameters_schema={
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
+                "additionalProperties": False,
+            },
             fn=None,
         )
     )
@@ -233,9 +237,7 @@ async def test_fail_node_policy_fails_run_as_ordinary_data_error(tmp_path):
     # The opener committed first; the agent's activation was marked invalid.
     opener_path = f"{workflow_class_path(flow)}.{workflow_class_path(opener)}"
     statuses = [
-        (r.node_path, r.payload.get("status"))
-        for r in records
-        if r.kind == "node_activation"
+        (r.node_path, r.payload.get("status")) for r in records if r.kind == "node_activation"
     ]
     assert statuses == [
         (opener_path, "ok"),
@@ -276,9 +278,8 @@ async def test_return_to_review_pauses_then_completes_after_corrected_resume(tmp
     ok_records = [
         r
         for r in reversed(final)
-        if r.kind == "node_activation" and r.payload.get("status") == "ok"
+        if r.kind == "node_activation"
+        and r.payload.get("status") == "ok"
         and r.node_path == agent_path
     ]
     assert len(ok_records) == 1  # replay after resume produced one clean activation
-
-
