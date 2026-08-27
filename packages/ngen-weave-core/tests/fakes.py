@@ -1,9 +1,4 @@
-"""Shared test doubles for model-boundary suites, including e2e.
-
-Classes:
-    FakeProvider: Canned-reply CompletionProvider with deterministic token
-        and cost accounting, recording every call for assertions.
-"""
+"""Shared test doubles for model-boundary and e2e suites."""
 
 from __future__ import annotations
 

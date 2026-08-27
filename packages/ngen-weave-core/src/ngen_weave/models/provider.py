@@ -1,7 +1,4 @@
-"""Completion boundary between ngweave and model SDKs.
-
-Backends translate native replies into Completion and raise the ngweave error taxonomy.
-"""
+"""Completion boundary between ngweave and model SDKs: adapters translate, never extend."""
 
 from __future__ import annotations
 

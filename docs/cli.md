@@ -1,7 +1,9 @@
 # CLI
 
-The `ngen-weave` console script has four commands. All of them translate to
-core calls; none carry business logic.
+The `ngen-weave` console script carries nine commands: `validate`, `run`,
+`resume`, `status`, `workflows`, `runs`, `cancel`, `note`, and
+`export-run`. All of them translate to core calls; none carry business
+logic.
 
 ## Discovery
 
@@ -71,6 +73,69 @@ ngen-weave status <run-id>
 Prints the workflow class path, current status, the node path blocking on
 human review when one is (`waiting-on`), and total cost summed from the run
 file's `model_call` provenance records.
+
+### export-run
+
+```
+gen-weave export-run <run-id> [--out PATH]
+```
+
+Emits the run as canonical JSON: the v0.1 key set plus the two defaulted
+keys `started_at` and `notes`. One serializer (`dump_run_json`) produces
+these bytes for the CLI, the HTTP export route, and every future consumer,
+so identical runs serialize identically. Without `--out` the document goes
+to stdout.
+
+### workflows
+
+```
+gen-weave workflows
+```
+
+Prints one line per registered workflow: its fully-qualified class path plus
+its `human_description`. This is the person-facing inventory; MCP exposure
+uses the workflow's separate tool `description` instead.
+
+### runs
+
+```
+gen-weave runs [--workflow PATH] [--status STATUS] [--url URL]
+```
+
+Lists runs with id, workflow class path, status, accumulated cost in USD,
+start time, and a waiting flag. Filters select by workflow and status. The
+command talks to a `RunService`: without `--url` it wires the local stack
+in-process from the usual config resolution, and `--url` points it at a
+remote ngen-weave server through `HttpRunService`.
+
+### cancel
+
+```
+gen-weave cancel <run-id> [--url URL]
+```
+
+Requests cancellation at the next activation boundary. A running node
+finishes; the next boundary stops the run, which ends as `cancelled`.
+Cancelling an already-terminal run is a no-op. The command prints the
+resulting status after the cancel request.
+
+### note
+
+```
+gen-weave note <run-id> <text> [--url URL]
+```
+
+Attaches a free-text note to a run's annotations through the service only;
+the note lands alongside the run record and shows up in exported JSON.
+
+## MCP entry points
+
+The `ngen-weave-mcp` and `ngen-weave-mcp-http` console scripts from the
+`ngen-weave-mcp` package expose the same discovered workflows as MCP tools
+over stdio and streamable HTTP at `/mcp`. Both accept `--root` (project root
+holding the manifest), `--config PATH` (a YAML/JSON run config loaded before
+serving, which applies settings such as `run.budget` limits), `--timeout`,
+`--models`, and `--db`.
 
 ## Provider injection for tests
 

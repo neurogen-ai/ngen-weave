@@ -1,11 +1,4 @@
-"""Nesting tests: recursive composition, cost attribution, deep resume.
-
-Covers success criterion 3: a two-level nested workflow attributes per-scope
-RunMetadata correctly (each composite's record sums its own records plus its
-descendants'), node paths accumulate one class-path segment per level, and a
-crashed run resumes from a fresh Engine against the same SQLite database.
-Variant bindings resolve through the full enclosing-scope chain.
-"""
+"""Nesting tests: recursive composition, per-scope cost attribution, deep resume."""
 
 from pathlib import Path  # noqa: F401  (tmp_path fixtures)
 from typing import Literal

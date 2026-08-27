@@ -1,16 +1,4 @@
-"""Workflow discovery from explicit listings.
-
-The registry gains classes only through discovery: distributions declare
-workflow modules as entry points under the ngen-weave.workflows group, and the
-project manifest lists module paths directly. Importing a module registers
-exactly the Workflow subclasses defined in it, never foreign classes re-exported
-through it, under their fully-qualified class paths. Strict mode turns import
-failures into ConfigError; duplicate paths raise in both modes.
-
-Functions:
-    discover: Import listed modules and register the workflows defined in them.
-    discover_entry_points: Read the package entry-point group and discover those modules.
-"""
+"""Workflow discovery via distribution entry points and manifest module lists."""
 
 from __future__ import annotations
 

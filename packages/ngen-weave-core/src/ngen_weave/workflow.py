@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import builtins
 import inspect
-import re
 import textwrap
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -16,6 +15,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, get_args, ge
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from ngen_weave.errors import ConfigError
+from ngen_weave.observers import (
+    OBSERVER_ACTIONS,
+    PREDICATE_FIELDS,
+    PREDICATE_OPS,
+    Observer,
+    ObserverPredicate,
+)
 
 if TYPE_CHECKING:
     from ngen_weave.models.provider import CompletionProvider
@@ -23,7 +29,15 @@ if TYPE_CHECKING:
 START = "__start__"  # maps to langgraph START
 END = "__end__"  # maps to langgraph END
 
-_CLASS_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+def _valid_class_name(name: str) -> bool:
+    """True iff name matches [A-Za-z_][A-Za-z0-9_]* over ASCII exactly."""
+    if not name:
+        return False
+    head, *rest = name
+    if not (head.isascii() and (head.isalpha() or head == "_")):
+        return False
+    return all(c.isascii() and (c.isalnum() or c == "_") for c in rest)
 
 
 def workflow_class_path(target: type[Workflow] | Workflow) -> str:
@@ -73,10 +87,8 @@ class Workflow:
         output_type: Required pydantic model validated at every outgoing edge.
         prompt: Worker template string; override prompt(self, input) for logic.
         artifacts: Names of output_type fields persisted as content-addressed artifacts.
+        observations: Observer rules supervised at activation boundaries; data only.
     """
-
-    # Supervision (observers) arrives in v0.2, built into the scheduler; no
-    # author-facing observer surface exists in v0.1.
 
     description: ClassVar[str] = ""
     human_description: ClassVar[str] = ""
@@ -84,6 +96,7 @@ class Workflow:
     output_type: ClassVar[type[BaseModel]]
     prompt: ClassVar[str | None] = None
     artifacts: ClassVar[Sequence[str]] = ()
+    observations: ClassVar[Sequence[Observer]] = ()
     # Collected fan-in only: dotted path sorted on when assembling this
     # node's list input. None keeps edge-declaration order. See _check_multi_parent.
     collect_order: ClassVar[str | None] = None
@@ -320,6 +333,25 @@ def _instantiate(cls: type[Workflow]) -> Workflow:
         ) from exc
 
 
+def _check_agent_node(cls: type[Workflow], path: str) -> None:
+    """Concrete AgentNode subclasses must declare a permissions PermissionSet.
+
+    The import is function-local so workflow stays importable without the agent
+    package; by the time any Workflow subclass exists, ngen_weave.workflow is
+    fully loaded, so this cannot cycle.
+    """
+    from ngen_weave.agent.node import AgentNode
+    from ngen_weave.agent.permissions import PermissionSet
+
+    if issubclass(cls, AgentNode) and not isinstance(
+        getattr(cls, "permissions", None), PermissionSet
+    ):
+        raise ConfigError(
+            f"{path}: AgentNode requires a permissions ClassVar[PermissionSet]; "
+            "its tool use is otherwise ungated"
+        )
+
+
 def _check_declarations(cls: type[Workflow]) -> None:
     path = workflow_class_path(cls)
     _check_type_attrs(cls, path)
@@ -330,8 +362,37 @@ def _check_declarations(cls: type[Workflow]) -> None:
     if issubclass(cls, Human):
         _check_human_state(cls, path)
     _check_prompt_and_artifacts(cls, path)
+    _check_observations(cls, path)
+    _check_agent_node(cls, path)
     if not (getattr(cls, "collect_order", None) is None or isinstance(cls.collect_order, str)):
         raise ConfigError(f"{path}: collect_order must be None or a dotted path string")
+
+
+def _check_observations(cls: type[Workflow], path: str) -> None:
+    """Every declared observer carries an ObserverPredicate with known field/op/action."""
+    for index, obs in enumerate(getattr(cls, "observations", ()) or ()):
+        where = f"{path}: observations[{index}]"
+        if not isinstance(obs, Observer):
+            raise ConfigError(f"{where} must be an Observer built by ngen_weave.observers")
+        if not isinstance(obs.predicate, ObserverPredicate):
+            raise ConfigError(
+                f"{where}: predicate must be an ObserverPredicate from ngen_weave.observers"
+            )
+        pred = obs.predicate
+        if pred.field not in PREDICATE_FIELDS:
+            raise ConfigError(
+                f"{where}: unknown predicate field {pred.field!r}; expected one of "
+                f"{', '.join(sorted(PREDICATE_FIELDS))}"
+            )
+        if pred.op not in PREDICATE_OPS:
+            raise ConfigError(
+                f"{where}: unknown predicate op {pred.op!r}; expected one of "
+                f"{', '.join(sorted(PREDICATE_OPS))}"
+            )
+        if isinstance(pred.value, bool) or not isinstance(pred.value, (int, float)):
+            raise ConfigError(f"{where}: predicate value must be int or float, got {pred.value!r}")
+        if obs.action not in OBSERVER_ACTIONS:
+            raise ConfigError(f"{where}: unknown action {obs.action!r}")
 
 
 def _check_type_attrs(cls: type[Workflow], path: str) -> None:
@@ -341,7 +402,7 @@ def _check_type_attrs(cls: type[Workflow], path: str) -> None:
         if not (isinstance(value, type) and issubclass(value, BaseModel)):
             raise ConfigError(f"{path}: {attr} must be a pydantic BaseModel subclass")
     last_segment = cls.__qualname__.rsplit(".", 1)[-1]
-    if not _CLASS_NAME_RE.match(last_segment):
+    if not _valid_class_name(last_segment):
         raise ConfigError(f"{path}: last path segment {last_segment!r} is not a valid identifier")
 
 

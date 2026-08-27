@@ -1,16 +1,4 @@
-"""In-process registry of discovered workflow classes.
-
-Discovery populates it; classes never register themselves by existing. Identity
-is the fully-qualified class path (workflow_class_path), so same-named classes
-in different modules coexist, and a duplicate path always means overlapping
-discovery sources, reported with both source names.
-
-Functions:
-    register: Record a workflow class under its class path, erroring on duplicates.
-    get: Look up a registered class by path, erroring with "unknown workflow".
-    all: Snapshot of every registered class path and class.
-    reset: Drop every registration; tests and reload tooling only.
-"""
+"""In-process registry of workflow classes keyed by fully-qualified class path."""
 
 from __future__ import annotations
 

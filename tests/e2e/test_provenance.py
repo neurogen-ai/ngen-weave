@@ -57,7 +57,8 @@ def _assert_provenance_invariants(runs_dir: Path) -> None:
     store = RunStore(runs_dir)
     run_files = store.list()
     assert len(run_files) == 1
-    records = run_files[0].records
+    # list() is header-only; the record stream comes from a full load.
+    records = store.load(run_files[0].run_id).records
 
     # No record kinds outside the frozen v0.1 set.
     kinds = {r.kind for r in records}
