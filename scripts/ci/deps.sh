@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-exec uv sync --locked
+exec uv sync --all-packages --locked

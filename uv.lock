@@ -1420,7 +1420,7 @@ requires-dist = [
 
 [[package]]
 name = "ngen-weave-mcp"
-version = "0.1.3"
+version = "0.1"
 source = { editable = "packages/ngen-weave-mcp" }
 dependencies = [
     { name = "mcp" },
@@ -1439,7 +1439,7 @@ requires-dist = [
 
 [[package]]
 name = "ngen-weave-server"
-version = "0.1.3"
+version = "0.1"
 source = { editable = "packages/ngen-weave-server" }
 dependencies = [
     { name = "fastapi" },
