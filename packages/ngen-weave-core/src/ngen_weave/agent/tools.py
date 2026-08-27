@@ -1,6 +1,5 @@
 """ToolSpec declarations and the ToolRegistry that validates and dispatches them."""
 
-import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -9,7 +8,20 @@ from jsonschema import Draft202012Validator
 from ngen_weave.agent.errors import UnknownToolError
 from ngen_weave.errors import ConfigError, DataError
 
-_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+# Tool names accept [a-z][a-z0-9_-]* (ASCII only), enforced character by character.
+# No regular expressions: a rejection is debuggable because the reason is
+# computed from an explicit check, not inferred from a failed pattern match.
+_TOOL_NAME_FIRST_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz")
+_TOOL_NAME_REST_CHARS = _TOOL_NAME_FIRST_CHARS | frozenset("0123456789_-")
+
+
+def _valid_tool_name(name: str) -> bool:
+    """True iff name matches [a-z][a-z0-9_-]* over ASCII exactly."""
+    return (
+        len(name) > 0
+        and name[0] in _TOOL_NAME_FIRST_CHARS
+        and all(c in _TOOL_NAME_REST_CHARS for c in name[1:])
+    )
 
 
 @dataclass(frozen=True)
@@ -46,7 +58,7 @@ class ToolRegistry:
         Raises:
             ConfigError: On duplicate or malformed names, or an invalid schema.
         """
-        if not _TOOL_NAME_RE.fullmatch(spec.name):
+        if not _valid_tool_name(spec.name):
             raise ConfigError(f"invalid tool name {spec.name!r}: must match [a-z][a-z0-9_-]*")
         if spec.name in self._specs:
             raise ConfigError(f"duplicate tool registration: {spec.name!r} already registered")

@@ -15,8 +15,9 @@ from mcp.server import Server
 from ngen_weave.manifest import MANIFEST_NAME
 from ngen_weave.wiring import build_service, merged_registry
 
+from ngen_weave_mcp.constants import DEFAULT_TOOL_TIMEOUT_S
 from ngen_weave_mcp.fake_provider import fake_provider_from_env
-from ngen_weave_mcp.tools import DEFAULT_TOOL_TIMEOUT_S, register_workflow_tools
+from ngen_weave_mcp.tools import register_workflow_tools
 
 EPILOG = """\
 Test-only environment hooks (not for production):

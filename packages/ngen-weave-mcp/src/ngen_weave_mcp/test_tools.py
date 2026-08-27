@@ -20,7 +20,8 @@ from ngen_weave.registry import reset as registry_reset
 from ngen_weave.workflow import END, START, Human, Worker, Workflow
 from pydantic import BaseModel
 
-from ngen_weave_mcp.tools import POLL_INTERVAL_S, register_workflow_tools, tool_name
+from ngen_weave_mcp.constants import POLL_INTERVAL_S
+from ngen_weave_mcp.tools import register_workflow_tools, tool_name
 
 
 class Root(BaseModel):
@@ -231,7 +232,7 @@ async def test_timeout_returns_error_naming_resumable_run(monkeypatch, tmp_path)
         async def status(self, run_id) -> RunFile:
             return RunFile(format=1, run_id=run_id, workflow="x", status="running", input={})
 
-    monkeypatch.setattr("ngen_weave_mcp.tools.POLL_INTERVAL_S", 0.001)
+    monkeypatch.setattr("ngen_weave_mcp.constants.POLL_INTERVAL_S", 0.001)
     echo, _, _, _, _ = build_fixtures(tmp_path)
     result = await call_tool(
         StuckService(),

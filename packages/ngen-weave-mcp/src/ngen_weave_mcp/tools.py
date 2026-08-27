@@ -13,8 +13,8 @@ from ngen_weave.service import RunService
 from ngen_weave.workflow import Workflow
 from pydantic import ValidationError
 
-POLL_INTERVAL_S = 0.25  # engine-specified status poll cadence while blocking
-DEFAULT_TOOL_TIMEOUT_S = 3600.0
+from ngen_weave_mcp import constants
+from ngen_weave_mcp.constants import DEFAULT_TOOL_TIMEOUT_S
 
 _TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 _PARKED_STATUSES = {"paused", "waiting_human"}
@@ -139,7 +139,7 @@ async def _await_run(
                     },
                 }
             )
-        await asyncio.sleep(POLL_INTERVAL_S)
+        await asyncio.sleep(constants.POLL_INTERVAL_S)
 
 
 def _parked_node(file) -> str:

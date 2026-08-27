@@ -16,12 +16,10 @@ from starlette.applications import Starlette
 from starlette.routing import Mount
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from ngen_weave_mcp.constants import DEFAULT_TOOL_TIMEOUT_S, MCP_HTTP_HOST, MCP_HTTP_PORT
 from ngen_weave_mcp.fake_provider import fake_provider_from_env
 from ngen_weave_mcp.stdio import EPILOG, _package_version
-from ngen_weave_mcp.tools import DEFAULT_TOOL_TIMEOUT_S, register_workflow_tools
-
-MCP_HTTP_HOST = "127.0.0.1"  # local-only by design; TLS/auth are out of scope
-MCP_HTTP_PORT = 8000
+from ngen_weave_mcp.tools import register_workflow_tools
 
 
 def create_http_app(

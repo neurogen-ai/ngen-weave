@@ -1231,3 +1231,24 @@ def test_run_context_shape():
     )
     ctx.emit("node_activation", {})
     assert calls == [("node_activation", {})]
+
+
+# --- class-name validation (explicit character checks) -----------------------
+
+
+def test_valid_class_name_matches_documented_language():
+    from ngen_weave.workflow import _valid_class_name
+
+    assert _valid_class_name("CodeReview")
+    assert _valid_class_name("_Private")
+    assert _valid_class_name("a")
+    assert _valid_class_name("Inner_2x")
+    assert not _valid_class_name("")  # empty
+    assert not _valid_class_name("2Fast")  # leading digit
+    assert not _valid_class_name("has-dash")
+    assert not _valid_class_name("has space")
+    assert not _valid_class_name("has.dot")
+    assert not _valid_class_name("trailing\n")  # trailing newline
+    assert not _valid_class_name("über")  # non-ascii letter
+    assert not _valid_class_name("naïveClass")  # embedded non-ascii
+    assert not _valid_class_name("a\u0301")  # ascii head, combining mark

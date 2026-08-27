@@ -6,18 +6,10 @@ import json
 
 from pydantic import BaseModel, ValidationError
 
-from ngen_weave.constants import REPLY_EXCERPT_CHARS
+from ngen_weave.constants import MAX_TURNS, REPAIR_NUDGE, REPLY_EXCERPT_CHARS
 from ngen_weave.engine.runner import _strip_code_fence
 from ngen_weave.errors import AgentReplyError
 from ngen_weave.schema_errors import format_validation_error
-
-MAX_TURNS = 3  # provider turns before exhaustion; one turn yields exactly one action
-
-_REPAIR_NUDGE = (
-    "Reply again with exactly one JSON object: either "
-    '{"tool_call": {"name": <tool>, "args": {...}}} '
-    'or {"output": {...}}.'
-)
 
 
 class HarnessAgentExecutor:
@@ -107,7 +99,7 @@ class HarnessAgentExecutor:
                 detail = action["invalid"] if action else ""
                 last_reply = f"{completion.text}\n{detail}".strip()
                 messages.append({"role": "assistant", "content": completion.text})
-                messages.append({"role": "user", "content": f"{detail}\n{_REPAIR_NUDGE}".strip()})
+                messages.append({"role": "user", "content": f"{detail}\n{REPAIR_NUDGE}".strip()})
                 continue
             if action["tool_call"] is not None:
                 result = await gate.call(action["tool_call"]["name"], action["tool_call"]["args"])

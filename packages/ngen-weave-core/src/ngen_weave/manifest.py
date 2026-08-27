@@ -6,11 +6,10 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from ngen_weave.constants import MANIFEST_NAME
 from ngen_weave.discovery import discover
 from ngen_weave.errors import ConfigError
 from ngen_weave.workflow import Workflow
-
-MANIFEST_NAME = "ngen-weave.json"
 
 
 @dataclass(frozen=True)

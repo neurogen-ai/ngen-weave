@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ngen_weave.config import ResolvedConfig
+from ngen_weave.constants import NGEN_WEAVE_DIR
 from ngen_weave.models.provider import CompletionProvider
 from ngen_weave.wiring import (
     LazyProvider,
@@ -17,7 +18,6 @@ from ngen_weave.wiring import (
     reset_merged_registry,
 )
 
-NGEN_WEAVE_DIR = Path(".ngen-weave")
 CONFIG_SUFFIXES = {".yaml", ".yml", ".json"}
 
 __all__ = [

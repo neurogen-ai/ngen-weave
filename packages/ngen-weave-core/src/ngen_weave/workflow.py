@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import builtins
 import inspect
-import re
 import textwrap
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -30,7 +29,15 @@ if TYPE_CHECKING:
 START = "__start__"  # maps to langgraph START
 END = "__end__"  # maps to langgraph END
 
-_CLASS_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+def _valid_class_name(name: str) -> bool:
+    """True iff name matches [A-Za-z_][A-Za-z0-9_]* over ASCII exactly."""
+    if not name:
+        return False
+    head, *rest = name
+    if not (head.isascii() and (head.isalpha() or head == "_")):
+        return False
+    return all(c.isascii() and (c.isalnum() or c == "_") for c in rest)
 
 
 def workflow_class_path(target: type[Workflow] | Workflow) -> str:
@@ -395,7 +402,7 @@ def _check_type_attrs(cls: type[Workflow], path: str) -> None:
         if not (isinstance(value, type) and issubclass(value, BaseModel)):
             raise ConfigError(f"{path}: {attr} must be a pydantic BaseModel subclass")
     last_segment = cls.__qualname__.rsplit(".", 1)[-1]
-    if not _CLASS_NAME_RE.match(last_segment):
+    if not _valid_class_name(last_segment):
         raise ConfigError(f"{path}: last path segment {last_segment!r} is not a valid identifier")
 
 

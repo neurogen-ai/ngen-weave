@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ngen_weave.artifacts import ArtifactStore
 from ngen_weave.config import ResolvedConfig, RunSettings
+from ngen_weave.constants import NGEN_WEAVE_DIR
 from ngen_weave.discovery import discover_entry_points
 from ngen_weave.engine.runner import Engine
 from ngen_weave.engine.store import RunStore
@@ -17,8 +18,6 @@ from ngen_weave.models.provider import CompletionProvider
 from ngen_weave.models.registry import LiteLLMProvider, ModelRegistry
 from ngen_weave.service import RunService
 from ngen_weave.workflow import Workflow
-
-NGEN_WEAVE_DIR = Path(".ngen-weave")
 
 _cached_registry: dict[str, type[Workflow]] | None = None
 
