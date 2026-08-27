@@ -1,6 +1,7 @@
 """Tests for run configuration loading."""
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -225,3 +226,45 @@ def test_no_budget_block_yields_none(env: Path) -> None:
     cfg_path = write_config(env, "ngw.yaml", f"workflow: {Probe.__module__}.Probe\n")
     cfg = load_config(cfg_path, registry_all())
     assert cfg.run.budget is None
+
+
+# --- -1 uncapped sentinel -----------------------------------------------------
+
+
+def test_budget_minus_one_both_dims_parse_uncapped(env: Path) -> None:
+    cfg_path = write_config(
+        env,
+        "ngw.yaml",
+        f"workflow: {Probe.__module__}.Probe\nrun:\n  budget:\n    cost_usd: -1\n    steps: -1\n",
+    )
+    cfg = load_config(cfg_path, registry_all())
+    assert cfg.run.budget.cost_usd is None
+    assert cfg.run.budget.steps is None
+
+
+def test_budget_steps_minus_one_warns_once(env: Path, caplog) -> None:
+    cfg_path = write_config(
+        env,
+        "ngw.yaml",
+        f"workflow: {Probe.__module__}.Probe\nrun:\n  budget:\n    steps: -1\n",
+    )
+    with caplog.at_level(logging.WARNING, logger="ngen_weave.config"):
+        load_config(cfg_path, registry_all())
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "steps" in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize(("cost", "steps"), [("-1", "5"), ("2.5", "-1"), ("-1", "-1")])
+def test_budget_mixed_capped_and_uncapped_parses(env: Path, cost: str, steps: str) -> None:
+    cfg_path = write_config(
+        env,
+        "ngw.yaml",
+        f"workflow: {Probe.__module__}.Probe\nrun:\n  budget:\n"
+        f"    cost_usd: {cost}\n    steps: {steps}\n",
+    )
+    cfg = load_config(cfg_path, registry_all())
+    expected_cost = None if cost == "-1" else float(cost)
+    expected_steps = None if steps == "-1" else int(steps)
+    assert cfg.run.budget.cost_usd == expected_cost
+    assert cfg.run.budget.steps == expected_steps

@@ -312,3 +312,85 @@ async def test_depth_two_activation_breach_pauses_at_composite_boundary_and_resu
     assert model_calls_on(rf, w1) == 1  # subtree work not replayed on resume
     assert model_calls_on(rf, w2) == 1
     assert len(kind_records(rf, "budget_exhausted")) == 1
+
+
+# --- -1 uncapped sentinel -----------------------------------------------------
+
+
+UNCAPPED_VARIANTS = [
+    Budget(),  # no dimensions set
+    Budget(steps=-1),
+    Budget(cost_usd=-1),
+    Budget(cost_usd=-1, steps=-1),
+]
+
+
+@pytest.mark.parametrize("budget", UNCAPPED_VARIANTS, ids=str)
+async def test_uncapped_budgets_complete_without_budget_records(tmp_path, budget):
+    """None and the -1 sentinel both mean unlimited; nothing may ever pause."""
+    w1 = make_worker("Uncw1", Root, Piece)
+    w2 = make_worker("Uncw2", Piece, Final)
+    chain = make_chain([w1, w2], Root, Final)
+    engine = make_engine(
+        tmp_path,
+        settings=make_settings(budget),
+        provider=FakeProvider(REPLIES),
+    )
+
+    result = await engine.run(chain, Root(text="hi"))
+
+    assert result.status == "completed"
+    rf = engine.store.load(result.run_id)
+    assert kind_records(rf, "budget_exhausted") == []
+
+
+async def test_mixed_dims_cap_independently(tmp_path):
+    """A -1 dim never breaches; the finite sibling still does, on its own dimension."""
+    w1 = make_worker("Mixw1", Root, Piece)
+    w2 = make_worker("Mixw2", Piece, Piece)
+    w3 = make_worker("Mixw3", Piece, Final)
+    chain = make_chain([w1, w2, w3], Root, Final)
+
+    # cost capped at 0.2, steps unlimited: breach must report cost_usd.
+    engine_cost = make_engine(
+        tmp_path / "cost",
+        settings=make_settings(Budget(cost_usd=0.2, steps=-1)),
+        provider=FakeProvider(REPLIES),
+    )
+    result = await engine_cost.run(chain, Root(text="hi"))
+    assert result.status == "paused"
+    rf = engine_cost.store.load(result.run_id)
+    breaches = kind_records(rf, "budget_exhausted")
+    assert [b.payload["dimension"] for b in breaches] == ["cost_usd"]
+
+    # steps capped at 2, cost unlimited: breach must report steps.
+    engine_steps = make_engine(
+        tmp_path / "steps",
+        settings=make_settings(Budget(steps=2, cost_usd=-1)),
+        provider=FakeProvider(REPLIES),
+    )
+    result = await engine_steps.run(chain, Root(text="hi"))
+    assert result.status == "paused"
+    rf = engine_steps.store.load(result.run_id)
+    breaches = kind_records(rf, "budget_exhausted")
+    assert [b.payload["dimension"] for b in breaches] == ["steps"]
+
+
+async def test_uncapped_budget_on_nested_workflow_completes(tmp_path):
+    """Nested composites under an uncapped budget run to completion cleanly."""
+    w1 = make_worker("Nuncw1", Root, Piece)
+    w2 = make_worker("Nuncw2", Piece, Piece)
+    w3 = make_worker("Nuncw3", Piece, Final)
+    inner = make_composite([w1, w2], Root, Piece, name="NuncInner")
+    outer = make_chain([inner, w3], Root, Final, name="NuncOuter")
+    engine = make_engine(
+        tmp_path,
+        settings=make_settings(Budget(cost_usd=-1, steps=-1)),
+        provider=FakeProvider(REPLIES),
+    )
+
+    result = await engine.run(outer, Root(text="hi"))
+
+    assert result.status == "completed"
+    rf = engine.store.load(result.run_id)
+    assert kind_records(rf, "budget_exhausted") == []

@@ -25,7 +25,7 @@ from pydantic import BaseModel, ValidationError
 from ngen_weave.agent.errors import ReturnToReviewError
 from ngen_weave.artifacts import ArtifactMeta, ArtifactStore, hash_value
 from ngen_weave.config import RunSettings
-from ngen_weave.constants import REPLY_EXCERPT_CHARS
+from ngen_weave.constants import BUDGET_UNLIMITED, REPLY_EXCERPT_CHARS
 from ngen_weave.engine.state import RunFile, RunResult, RunStatus
 from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import (
@@ -515,7 +515,8 @@ class Engine:
         come from the store's incrementally maintained columns via the run
         file's identity, never from rescanning records; cost_usd compares
         accumulated model-call spend and steps compare node_activation counts
-        (a breach fires when observed reaches the limit). On a budget breach
+        (a breach fires when observed reaches the limit; a limit of -1, the
+        BUDGET_UNLIMITED sentinel, is uncapped). On a budget breach
         this emits exactly one budget_exhausted record naming the crossing
         activation and flips _boundary_stop to a paused outcome whose waiting
         dict carries node_path plus reason; a paused run later resumes by
@@ -531,9 +532,20 @@ class Engine:
         if budget is None or run_id in self._breach_emitted:
             return False
         cost_usd, activations = self.store.usage_totals(run_id)
-        if budget.steps is not None and activations >= budget.steps:
+        # Treat None OR the -1 sentinel as unlimited BEFORE any comparison;
+        # config parsing normalizes -1 away, but directly constructed budgets
+        # may still carry it.
+        if (
+            budget.steps is not None
+            and budget.steps != BUDGET_UNLIMITED
+            and activations >= budget.steps
+        ):
             dimension, limit, observed = "steps", budget.steps, activations
-        elif budget.cost_usd is not None and cost_usd >= budget.cost_usd:
+        elif (
+            budget.cost_usd is not None
+            and budget.cost_usd != BUDGET_UNLIMITED
+            and cost_usd >= budget.cost_usd
+        ):
             dimension, limit, observed = "cost_usd", budget.cost_usd, cost_usd
         else:
             return False

@@ -1,16 +1,16 @@
-"""Run configuration: YAML/JSON files resolving to ResolvedConfig.
-
-Data only; structure stays in code and this layer accepts no code-bearing members.
-"""
+"""Run configuration: YAML/JSON files resolving to ResolvedConfig (data only).
+Accepts no code-bearing members; workflow structure stays in code."""
 
 from __future__ import annotations
 
 import importlib
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ngen_weave.constants import BUDGET_UNLIMITED
 from ngen_weave.errors import ConfigError
 from ngen_weave.workflow import Workflow
 
@@ -27,6 +27,8 @@ class Budget:
     incrementally maintained totals); steps caps node_activation counts. A
     breach pauses the run at the next activation boundary instead of failing
     it, so a resume with a raised cap continues from the same checkpoint.
+    Config parsing normalizes BUDGET_UNLIMITED (-1) to None here; direct
+    constructions carrying -1 are uncapped at enforcement time.
     """
 
     cost_usd: float | None = None
@@ -167,7 +169,8 @@ def _parse_budget(raw: Any, source: Path) -> Budget:
     """Validate one run.budget mapping into a Budget.
 
     Both fields are optional but at least one must be present when the key is;
-    unknown keys are rejected like every other config key.
+    unknown keys are rejected like every other config key. -1 is the uncapped
+    sentinel (BUDGET_UNLIMITED) and normalizes to None for that dimension.
     """
     if not isinstance(raw, dict):
         raise ConfigError(f"{source}: run.budget must be a mapping")
@@ -176,15 +179,37 @@ def _parse_budget(raw: Any, source: Path) -> Budget:
         raise ConfigError(f"{source}: unknown run.budget keys: {sorted(unknown)}")
     cost_usd = raw.get("cost_usd")
     steps = raw.get("steps")
-    cost_ok = isinstance(cost_usd, (int, float)) and not isinstance(cost_usd, bool) and cost_usd > 0
-    steps_ok = isinstance(steps, int) and not isinstance(steps, bool) and steps > 0
+    cost_ok = (
+        isinstance(cost_usd, (int, float))
+        and not isinstance(cost_usd, bool)
+        and (cost_usd > 0 or cost_usd == BUDGET_UNLIMITED)
+    )
+    steps_ok = (
+        isinstance(steps, int)
+        and not isinstance(steps, bool)
+        and (steps > 0 or steps == BUDGET_UNLIMITED)
+    )
     if cost_usd is not None and not cost_ok:
-        raise ConfigError(f"{source}: run.budget.cost_usd must be a positive number")
+        raise ConfigError(
+            f"{source}: run.budget.cost_usd must be a positive number or {BUDGET_UNLIMITED} "
+            "for no cap"
+        )
     if steps is not None and not steps_ok:
-        raise ConfigError(f"{source}: run.budget.steps must be a positive integer")
+        raise ConfigError(
+            f"{source}: run.budget.steps must be a positive integer or {BUDGET_UNLIMITED} "
+            "for no cap"
+        )
     if cost_usd is None and steps is None:
         raise ConfigError(f"{source}: run.budget requires at least one of 'cost_usd' or 'steps'")
-    return Budget(cost_usd=None if cost_usd is None else float(cost_usd), steps=steps)
+    if steps == BUDGET_UNLIMITED:
+        logging.getLogger(__name__).warning(
+            f"{source}: run.budget.steps = {BUDGET_UNLIMITED} disables the step cap; "
+            "the run is unlimited in steps"
+        )
+    return Budget(
+        cost_usd=None if cost_usd in (None, BUDGET_UNLIMITED) else float(cost_usd),
+        steps=None if steps == BUDGET_UNLIMITED else steps,
+    )
 
 
 def load_config(path: Path | str, registry: dict[str, type[Workflow]]) -> ResolvedConfig:
