@@ -1,10 +1,4 @@
-"""Runs-management CLI verbs over a RunService: local and HTTP backends.
-
-Seeds runs through the store, then drives workflows/runs/cancel/note via
-Typer's runner: local mode against tmp `.ngen-weave` wiring, --url mode
-against the D2 ASGI app with an ASGI transport monkeypatched into
-HttpRunService.
-"""
+"""Runs-management CLI verbs over a RunService: local and HTTP backends."""
 
 from __future__ import annotations
 

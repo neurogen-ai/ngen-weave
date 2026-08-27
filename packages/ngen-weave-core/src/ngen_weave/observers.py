@@ -33,7 +33,7 @@ _OP_FNS: dict[str, Callable[[float, float], bool]] = {
 class ObserverPredicate:
     """Structured comparison over a scope's RunMetadata field.
 
-    Declared through the gt/lt/ge/le/eq builder functions and carried verbatim
+    Constructed directly with field/op/value and carried verbatim
     on Workflow.observations; unknown fields and ops are rejected at import
     time by validate_structure, so evaluate() needs no body policing.
 
@@ -60,31 +60,6 @@ class ObserverPredicate:
     def describe(self) -> str:
         """Render the comparison mechanically, e.g. "cost_usd > 0.5"; cannot drift from it."""
         return f"{self.field} {_OP_SYMBOLS[self.op]} {self.value}"
-
-
-def gt(field: str, value: float | int) -> ObserverPredicate:
-    """Build an ObserverPredicate firing when the observed number exceeds value."""
-    return ObserverPredicate(field=field, op="gt", value=value)  # type: ignore[arg-type]
-
-
-def lt(field: str, value: float | int) -> ObserverPredicate:
-    """Build an ObserverPredicate firing when the observed number is below value."""
-    return ObserverPredicate(field=field, op="lt", value=value)  # type: ignore[arg-type]
-
-
-def ge(field: str, value: float | int) -> ObserverPredicate:
-    """Build an ObserverPredicate firing when the observed number meets or exceeds value."""
-    return ObserverPredicate(field=field, op="ge", value=value)  # type: ignore[arg-type]
-
-
-def le(field: str, value: float | int) -> ObserverPredicate:
-    """Build an ObserverPredicate firing when the observed number is at most value."""
-    return ObserverPredicate(field=field, op="le", value=value)  # type: ignore[arg-type]
-
-
-def eq(field: str, value: float | int) -> ObserverPredicate:
-    """Build an ObserverPredicate firing when the observed number equals value."""
-    return ObserverPredicate(field=field, op="eq", value=value)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)

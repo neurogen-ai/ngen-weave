@@ -12,7 +12,7 @@ from ngen_weave.config import Budget, RunSettings
 from ngen_weave.engine import Engine
 from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import ConfigError
-from ngen_weave.observers import Observer, ObserverPredicate, eq, ge, gt, le, lt
+from ngen_weave.observers import Observer, ObserverPredicate
 from ngen_weave.provenance import RunMetadata
 from ngen_weave.workflow import END, START, Worker, workflow_class_path
 from ngen_weave.workflow import Workflow as _W
@@ -44,41 +44,41 @@ def meta(**overrides: float | int) -> RunMetadata:
 
 
 def test_gt_evaluates_against_metadata():
-    p = gt("cost_usd", 0.25)
+    p = ObserverPredicate(field="cost_usd", op="gt", value=0.25)
     assert p.evaluate(meta()) is True
     assert p.evaluate(meta(cost_usd=0.25)) is False
     assert p.evaluate(meta(cost_usd=0.24)) is False
 
 
 def test_lt_evaluates_against_metadata():
-    p = lt("iterations", 5)
+    p = ObserverPredicate(field="iterations", op="lt", value=5)
     assert p.evaluate(meta()) is True
     assert p.evaluate(meta(iterations=5)) is False
     assert p.evaluate(meta(iterations=6)) is False
 
 
 def test_ge_evaluates_against_metadata():
-    p = ge("tokens_total", 150)
+    p = ObserverPredicate(field="tokens_total", op="ge", value=150)
     assert p.evaluate(meta()) is True
     assert p.evaluate(meta(tokens_total=151)) is True
     assert p.evaluate(meta(tokens_total=149)) is False
 
 
 def test_le_evaluates_against_metadata():
-    p = le("elapsed_ms", 2000)
+    p = ObserverPredicate(field="elapsed_ms", op="le", value=2000)
     assert p.evaluate(meta()) is True
     assert p.evaluate(meta(elapsed_ms=1999)) is True
     assert p.evaluate(meta(elapsed_ms=2001)) is False
 
 
 def test_eq_evaluates_against_metadata():
-    p = eq("tokens_in_context", 100)
+    p = ObserverPredicate(field="tokens_in_context", op="eq", value=100)
     assert p.evaluate(meta()) is True
     assert p.evaluate(meta(tokens_in_context=101)) is False
 
 
 def test_predicate_is_frozen():
-    p = gt("cost_usd", 1)
+    p = ObserverPredicate(field="cost_usd", op="gt", value=1)
     with pytest.raises(AttributeError):  # dataclass frozen instance rejection
         p.value = 2  # type: ignore[misc]
 
@@ -88,11 +88,14 @@ def test_predicate_is_frozen():
 
 def test_describe_exact_strings():
     cases = [
-        (gt("cost_usd", 0.50), "cost_usd > 0.5"),
-        (lt("iterations", 10), "iterations < 10"),
-        (ge("tokens_total", 1000), "tokens_total >= 1000"),
-        (le("elapsed_ms", 30000), "elapsed_ms <= 30000"),
-        (eq("tokens_in_context", 256), "tokens_in_context == 256"),
+        (ObserverPredicate(field="cost_usd", op="gt", value=0.50), "cost_usd > 0.5"),
+        (ObserverPredicate(field="iterations", op="lt", value=10), "iterations < 10"),
+        (ObserverPredicate(field="tokens_total", op="ge", value=1000), "tokens_total >= 1000"),
+        (ObserverPredicate(field="elapsed_ms", op="le", value=30000), "elapsed_ms <= 30000"),
+        (
+            ObserverPredicate(field="tokens_in_context", op="eq", value=256),
+            "tokens_in_context == 256",
+        ),
     ]
     for pred, expected in cases:
         assert pred.describe() == expected
@@ -100,7 +103,7 @@ def test_describe_exact_strings():
 
 def test_describe_matches_evaluate_terms():
     """The description uses the same field/op/value the evaluator compares."""
-    pred = ge("cost_usd", 0.75)
+    pred = ObserverPredicate(field="cost_usd", op="ge", value=0.75)
     observed = pred.describe()
     f, sym, val = observed.split(" ", maxsplit=2)
     assert getattr(meta(cost_usd=float(val)), f) == pytest.approx(0.75)
@@ -128,7 +131,7 @@ def make_worker(name: str, **attrs):
     return type(name, (Worker,), body)
 
 
-GOOD_OBSERVATIONS = (Observer(gt("cost_usd", 1.0)),)
+GOOD_OBSERVATIONS = (Observer(ObserverPredicate(field="cost_usd", op="gt", value=1.0)),)
 
 
 def test_valid_observations_pass_validation():
@@ -162,7 +165,10 @@ def test_bool_value_rejected_naming_class():
 
 def test_non_observer_entry_rejected_naming_class():
     with pytest.raises(ConfigError, match="ShapedWorker.*must be an Observer"):
-        make_worker("ShapedWorker", observations=(gt("cost_usd", 1.0),))
+        make_worker(
+            "ShapedWorker",
+            observations=(ObserverPredicate(field="cost_usd", op="gt", value=1.0),),
+        )
 
 
 def test_non_predicate_rejected_naming_class():
@@ -174,7 +180,7 @@ def test_non_predicate_rejected_naming_class():
 
 
 def test_unknown_action_rejected_naming_class():
-    obs = Observer(gt("cost_usd", 1.0), action="stop")  # type: ignore[arg-type]
+    obs = Observer(ObserverPredicate(field="cost_usd", op="gt", value=1.0), action="stop")  # type: ignore[arg-type]
     with pytest.raises(ConfigError, match="StoppedWorker.*unknown action"):
         make_worker("StoppedWorker", observations=(obs,))
 
@@ -269,7 +275,9 @@ async def test_composite_cost_crossing_threshold_pauses_with_one_record(tmp_path
         [cw1, cw2],
         Text,
         Mid,
-        attrs={"observations": (Observer(gt("cost_usd", 0.2)),)},
+        attrs={
+            "observations": (Observer(ObserverPredicate(field="cost_usd", op="gt", value=0.2)),)
+        },
     )
     outer = bound_chain("ObsOuterComp", [inner, cw3], Text, Tail)
     engine = bound_engine(tmp_path, FakeProvider(ENG_REPLIES))
@@ -296,7 +304,12 @@ async def test_composite_cost_crossing_threshold_pauses_with_one_record(tmp_path
 
 
 async def test_leaf_observer_fires_on_own_activation_metadata(tmp_path):
-    low = bound_worker("OwnActWorker", Text, Mid, observations=(Observer(gt("cost_usd", 0.1)),))
+    low = bound_worker(
+        "OwnActWorker",
+        Text,
+        Mid,
+        observations=(Observer(ObserverPredicate(field="cost_usd", op="gt", value=0.1)),),
+    )
     tail = bound_worker("OwnActTail", Mid, Tail)
     chain = bound_chain("OwnActChain", [low, tail], Text, Tail)
     engine = bound_engine(tmp_path, FakeProvider(ENG_REPLIES))
@@ -317,7 +330,12 @@ async def test_leaf_observer_fires_on_own_activation_metadata(tmp_path):
 
 
 async def test_depth_two_leaf_observer_pauses_and_resume_skips_committed_nodes(tmp_path):
-    deep = bound_worker("DeepObsLeaf", Text, Mid, observations=(Observer(gt("cost_usd", 0.1)),))
+    deep = bound_worker(
+        "DeepObsLeaf",
+        Text,
+        Mid,
+        observations=(Observer(ObserverPredicate(field="cost_usd", op="gt", value=0.1)),),
+    )
     deeper = bound_worker("DeepPlainLeaf", Mid, Mid)
     tail3 = bound_worker("DeepObsTail", Mid, Tail)
     inner = bound_chain("DeepObsInner", [deep, deeper], Text, Mid)
@@ -346,7 +364,12 @@ async def test_depth_two_leaf_observer_pauses_and_resume_skips_committed_nodes(t
 
 
 async def test_resume_after_flat_observer_pause_completes(tmp_path):
-    first = bound_worker("FlatObsWorker", Text, Mid, observations=(Observer(gt("cost_usd", 0.1)),))
+    first = bound_worker(
+        "FlatObsWorker",
+        Text,
+        Mid,
+        observations=(Observer(ObserverPredicate(field="cost_usd", op="gt", value=0.1)),),
+    )
     second = bound_worker("FlatObsTail", Mid, Tail)
     chain = bound_chain("FlatObsChain", [first, second], Text, Tail)
     engine = bound_engine(tmp_path, FakeProvider(ENG_REPLIES))
@@ -365,7 +388,10 @@ async def test_resume_after_flat_observer_pause_completes(tmp_path):
 
 async def test_budget_breach_suppresses_observer_at_same_boundary(tmp_path):
     greedy = bound_worker(
-        "ShortCircuitWorker", Text, Mid, observations=(Observer(gt("cost_usd", 0.05)),)
+        "ShortCircuitWorker",
+        Text,
+        Mid,
+        observations=(Observer(ObserverPredicate(field="cost_usd", op="gt", value=0.05)),),
     )
     follower = bound_worker("ShortCircuitTail", Mid, Tail)
     chain = bound_chain("ShortCircuitChain", [greedy, follower], Text, Tail)
@@ -393,7 +419,9 @@ async def test_root_observer_is_informational_at_completion(tmp_path):
         [runner_leaf],
         Text,
         Tail,
-        attrs={"observations": (Observer(le("iterations", 5)),)},
+        attrs={
+            "observations": (Observer(ObserverPredicate(field="iterations", op="le", value=5)),),
+        },
     )
     engine = bound_engine(tmp_path, FakeProvider(ENG_REPLIES))
 

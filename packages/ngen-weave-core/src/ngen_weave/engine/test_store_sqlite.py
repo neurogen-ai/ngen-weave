@@ -1,4 +1,4 @@
-"""RunStore over SQLite: round trip, commit boundaries, totals, legacy import."""
+"""RunStore over SQLite: round trip, commit boundaries, totals."""
 
 from __future__ import annotations
 
@@ -9,9 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from ngen_weave.engine.state import RUN_FILE_FORMAT, RunFile
+from ngen_weave.engine.state import RUN_FILE_FORMAT
 from ngen_weave.engine.store import RunStore
-from ngen_weave.errors import ConfigError
 from ngen_weave.provenance import ProvenanceRecord
 from ngen_weave.service import UnknownRunError
 
@@ -139,81 +138,3 @@ class TestTotalsAndCommittedVisibility:
         # Exactly one node_activation record was appended; each increments
         # activations once (plan A2 totals rule).
         assert activations == 1
-
-
-def _legacy_flat_file(tmp_path: Path) -> tuple[str, dict]:
-    """Write one v0.1-layout flat file; return its id and on-disk dict."""
-    run_id = "legacy-run-id"
-    run_file = RunFile(
-        format=RUN_FILE_FORMAT,
-        run_id=run_id,
-        workflow="m.Legacy",
-        status="completed",
-        input={"text": "hi"},
-        output={"echoed": "hi"},
-        error=None,
-        attempts=1,
-        submissions={"m.Legacy.Gate": {"verdict": "approve"}},
-        records=[
-            _record(run_id, 1, "model_call", {"variant": "s", "cost_usd": 0.05}),
-            _record(run_id, 2, "node_activation", {"status": "ok"}),
-        ],
-    )
-    dump = run_file.to_dict()
-    dump.pop("started_at")  # not part of the v0.1 layout
-    dump.pop("notes")
-    legacy_dir = tmp_path / "runs"
-    legacy_dir.mkdir(parents=True, exist_ok=True)
-    (legacy_dir / f"{run_id}.json").write_text(json.dumps(dump, indent=2))
-    return run_id, dump
-
-
-class TestLegacyImport:
-    def test_imports_once_then_noop(self, tmp_path: Path):
-        run_id, dump = _legacy_flat_file(tmp_path)
-
-        store = RunStore(tmp_path / "runs")
-        loaded = store.load(run_id)
-        assert loaded.workflow == "m.Legacy"
-        assert loaded.status == "completed"
-        assert loaded.attempts == 1
-        assert loaded.submissions == dump["submissions"]
-        assert [r.node_path for r in loaded.records] == ["m.W.node1", "m.W.node2"]
-        assert [r.kind for r in loaded.records] == ["model_call", "node_activation"]
-        assert loaded.output == {"echoed": "hi"}
-        # Legacy files lack started_at; falls back to the first record's ts.
-        assert loaded.started_at == loaded.records[0].ts
-
-        store.close()
-        again = RunStore(tmp_path / "runs")
-        runs = again.list()
-        assert [r.run_id for r in runs] == [run_id]
-        reloaded = again.load(run_id)
-        assert reloaded.records == loaded.records
-        # Totals survived the import; second init did not double-count them.
-        conn = sqlite3.connect(_db_path(tmp_path / "runs"))
-        cost_usd, activations = conn.execute(
-            "SELECT cost_usd, activations FROM runs WHERE run_id = ?", (run_id,)
-        ).fetchone()
-        conn.close()
-        assert activations == 1
-        assert reloaded.status == "completed"
-
-    def test_import_skips_ids_already_in_database(self, tmp_path: Path):
-        store = RunStore(tmp_path / "runs")
-        existing = store.create("m.Fresh", {"x": 9})
-        store.close()
-        # Overwrite nothing: an unrelated legacy id coexists with db-native ones.
-        run_id, _dump = _legacy_flat_file(tmp_path)
-        combined = RunStore(tmp_path / "runs")
-        ids = {run.run_id for run in combined.list()}
-        assert ids == {existing, run_id}
-
-
-class TestMalformedLegacy:
-    def test_malformed_legacy_file_fails_loudly(self, tmp_path: Path):
-        legacy_dir = tmp_path / "runs"
-        legacy_dir.mkdir(parents=True, exist_ok=True)
-        (legacy_dir / "bad.json").write_text("{not json")
-        with pytest.raises(ConfigError, match="cannot import legacy run file"):
-            RunStore(tmp_path / "runs")

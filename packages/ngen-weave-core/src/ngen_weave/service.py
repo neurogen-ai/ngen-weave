@@ -1,18 +1,4 @@
-"""RunService protocol plus run-summary types.
-
-This module defines the seam between callers of ngen-weave (server, CLI,
-future UIs) and a running system: handle shapes, listing filters, and the
-service contract. Later steps implement RunService, never amend it.
-
-Classes:
-    RunHandle: Lightweight identity-plus-status pair returned by launch/resume.
-    RunSummary: One-row projection of a run for listings.
-    RunFilters: Optional equality filters applied to summaries when listing.
-    RunService: Protocol every implementation (local, remote) must satisfy.
-
-Functions:
-    summaries: Project loaded run files onto listing summaries.
-"""
+"""RunService protocol plus run-summary types: the caller-facing seam."""
 
 from __future__ import annotations
 
@@ -55,8 +41,7 @@ class RunSummary:
         run_id: Identifier of the run.
         workflow: Fully-qualified class path of the run's root workflow.
         status: Current lifecycle status.
-        started_at: UTC ISO-8601 timestamp; the first record's ts when the
-            header carries no creation timestamp (legacy imports).
+        started_at: UTC ISO-8601 creation timestamp.
         cost_usd: Summed cost across model_call records.
         waiting_on_human: True while status == "waiting_human".
     """
@@ -111,7 +96,7 @@ def summaries(files: Iterable[RunFile]) -> list[RunSummary]:
 
 
 def _summary(file: RunFile) -> RunSummary:
-    started_at = file.started_at or next((record.ts for record in file.records if record.ts), "")
+    started_at = file.started_at
     return RunSummary(
         run_id=file.run_id,
         workflow=file.workflow,

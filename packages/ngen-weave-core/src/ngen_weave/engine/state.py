@@ -1,13 +1,4 @@
-"""Run file and result shapes.
-
-RunFile is the one JSON document per run under .ngen-weave/runs/: metadata
-plus the full event/provenance stream, always valid and sufficient to re-run.
-RunResult is what Engine.run/resume return to callers.
-
-Classes:
-    RunFile: Complete persisted state of one run, serialized by RunStore.
-    RunResult: Terminal or in-flight outcome of a run call.
-"""
+"""Run file and result shapes for runs under .ngen-weave/runs/."""
 
 from __future__ import annotations
 
@@ -39,7 +30,8 @@ class RunFile:
         attempts: How many times the engine has driven this run; each attempt
             gets its own checkpoint namespace so a failed run re-executes
             from the top instead of replaying a dead superstep.
-        started_at: UTC ISO-8601 creation timestamp; empty for legacy imports.
+        started_at: UTC ISO-8601 creation timestamp; empty only in parsed
+            export payloads that omitted it.
         notes: Operator-attached free-text annotations.
         records: Full provenance stream, oldest first.
     """

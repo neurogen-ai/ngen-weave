@@ -1,10 +1,4 @@
-"""Single-writer persistence for run state in one SQLite database.
-
-RunStore owns run persistence: every read and write of run state goes
-through it, so later backends (Postgres at v0.6) swap in behind one class.
-Records append per transition and header fields update separately, so no
-write ever rewrites the whole record stream. Review artifacts stay files.
-"""
+"""Single-writer persistence for run state in one SQLite database."""
 
 from __future__ import annotations
 
@@ -12,13 +6,11 @@ import json
 import os
 import sqlite3
 import uuid
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ngen_weave.engine.state import RUN_FILE_FORMAT, RunFile, RunStatus
 from ngen_weave.errors import ConfigError
-from ngen_weave.export import load_run_json
 from ngen_weave.provenance import PROVENANCE_VERSION, ProvenanceRecord
 from ngen_weave.service import UnknownRunError
 
@@ -47,7 +39,7 @@ class RunStore:
 
     The store is the sole writer of run state; nothing else touches the runs
     database. The runs directory keeps its role as the home of review
-    artifacts and of any legacy v0.1 flat run files (imported at init).
+    artifacts only; legacy v0.1 flat run files are never scanned or imported.
     """
 
     def __init__(self, runs_dir: Path, *, db_path: Path | None = None) -> None:
@@ -59,7 +51,6 @@ class RunStore:
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
-        self._import_legacy()
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""
@@ -385,25 +376,6 @@ class RunStore:
             notes=json.loads(row["notes_json"]),
             records=records,
         )
-
-    def _import_legacy(self) -> None:
-        """Import every legacy v0.1 flat run file whose id is absent, idempotently.
-
-        save() persists headers, records, and derived totals together, so an
-        imported run carries the cost/activation totals its records imply;
-        second init skips already-present ids and cannot double-count them.
-        """
-        for path in sorted(self.runs_dir.glob("*.json")):
-            try:
-                run = load_run_json(path.read_bytes())
-            except Exception as exc:
-                raise ConfigError(f"{path}: cannot import legacy run file: {exc}") from exc
-            if self._fetch_row(run.run_id) is not None:
-                continue
-            # Legacy files carry no started_at; fall back to the first record's ts.
-            first_ts = next((r.ts for r in run.records if r.ts), "")
-            imported = replace(run, started_at=run.started_at or first_ts)
-            self.save(imported)
 
 
 def _json_or_none(value: dict | list | None) -> str | None:

@@ -76,11 +76,6 @@ class TestSummariesProjection:
         assert waiting.waiting_on_human is True
         assert running.waiting_on_human is False
 
-    def test_started_at_falls_back_to_first_record_ts_for_legacy_imports(self):
-        file = _file("legacy", started_at="", records=[_record("legacy", 7, "model_call", {})])
-        [summary] = summaries([file])
-        assert summary.started_at == "2025-01-01T00:00:07+00:00"
-
     def test_empty_input_yields_empty_list(self):
         assert summaries([]) == []
 

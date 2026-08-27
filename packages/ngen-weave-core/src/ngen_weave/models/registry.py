@@ -1,7 +1,4 @@
-"""Model variants loaded from project-root models.json.
-
-LiteLLMProvider is the only module importing litellm; adapters translate, never extend.
-"""
+"""Model variants loaded from project-root models.json (only litellm-importing module)."""
 
 from __future__ import annotations
 

@@ -1,10 +1,4 @@
-"""Human artifact generation, prefill, and completion validation.
-
-Covers slot generation from flat state models (defaults and
-required-without-default), nested-model rejection, prefill via path strings,
-and submission validation naming missing fields. Engine interrupt and resume
-behavior lives in engine/test_engine.py.
-"""
+"""Human artifact generation, prefill, and completion validation tests."""
 
 from enum import StrEnum
 from typing import Literal

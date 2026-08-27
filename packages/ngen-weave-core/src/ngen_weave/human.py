@@ -1,16 +1,4 @@
-"""Human review artifacts: response slots, prefill, completion validation.
-
-The artifact's editable surface is generated, never hand-written: a human
-node's state_type leaves become the response slots, prefill seeds them from
-the edge input via path strings, and submission is plain state_type
-validation. Prefill fills the artifact but never completes it; submitting the
-reviewed artifact is the act that resumes the run.
-
-Functions:
-    build_response_slots: Null-seeded slot map from state_type leaf primitives.
-    apply_prefill: Seed slots from the context dump via dotted paths.
-    validate_completion: Validate a submitted response as the state model.
-"""
+"""Human review artifacts: generated response slots, prefill, completion."""
 
 from __future__ import annotations
 

@@ -1,11 +1,4 @@
-"""Artifact store tests: content addressing, sidecars, provenance linking.
-
-Covers ArtifactStore.put idempotence and address stability, canonical value
-hashing, sidecar contents, and the engine integration: a successful
-activation whose workflow declares artifacts stores each named field and
-emits an artifact_write record linking the blob to its producing activation,
-whether the declaring workflow is a wired child or the run root.
-"""
+"""Artifact store tests: content addressing, sidecars, provenance linking."""
 
 import hashlib
 import json

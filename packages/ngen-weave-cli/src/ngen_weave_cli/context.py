@@ -1,7 +1,6 @@
 """Construction of engines, stores, and discovery maps for CLI commands.
 
-Thin wrapper over ngen_weave.wiring so commands stay thin translations; the
-shared composition root lives in core where server-side consumers reuse it.
+Thin wrapper over ngen_weave.wiring so commands stay thin translations.
 """
 
 from __future__ import annotations

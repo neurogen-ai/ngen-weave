@@ -1,10 +1,4 @@
-"""Engine tests: run files, flat graph execution, control routing, retries.
-
-Covers RunStore atomicity and stream integrity, then Engine.compile/run
-against flat graphs: worker chains, control pass/fail and model-mode routing,
-fan-in assembly, provenance emission, and resume behavior. Nesting lives in
-test_nesting.py.
-"""
+"""Engine tests: run files, flat graphs, control routing, retries, resume."""
 
 from pathlib import Path
 from typing import Literal

@@ -1,11 +1,4 @@
-"""Budget enforcement and cooperative cancellation.
-
-Covers C1 semantics end to end against flat and nested workflows: cost/steps
-breaches pause exactly once at a committed activation boundary, a fresh
-Engine with a raised cap resumes the SAME checkpoint namespace without
-re-executing committed nodes, under-budget runs stay silent, and
-Engine.cancel stops cleanly between transitions and is idempotent.
-"""
+"""Budget enforcement and cooperative cancellation (C1 semantics)."""
 
 import pytest
 from pydantic import BaseModel

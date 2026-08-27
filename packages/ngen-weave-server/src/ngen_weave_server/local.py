@@ -1,8 +1,5 @@
-"""Local in-process implementation of the RunService protocol.
-
-Wires the LangGraph-backed Engine and RunStore behind the six protocol
-methods; HTTP translation and clients live in their own modules.
-"""
+"""Local in-process implementation of the RunService protocol: wires the LangGraph-backed
+Engine and RunStore behind the six protocol methods; HTTP layers live in their own modules."""
 
 from __future__ import annotations
 
@@ -80,10 +77,9 @@ class LocalRunService:
     async def list_runs(self, filters: RunFilters | None = None) -> list[RunSummary]:
         """Summaries of every stored run, filtered by the given fields.
 
-        Summaries project over fully loaded run files per the B2 contract:
-        header rows carry no records, so cost_usd would always read zero
-        without loading each stream whole. The O(records) listing cost is
-        documented and accepted until profiling complains.
+        Summaries project over fully loaded run files, not just header rows:
+        cost_usd would always read zero otherwise. This makes listing O(records);
+        acceptable until profiling says otherwise.
         """
         found = summaries(self.store.load(header.run_id) for header in self.store.list())
         if filters is not None:

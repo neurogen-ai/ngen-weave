@@ -1,7 +1,6 @@
-"""RunService client speaking HTTP: D3 seam for remote backends.
+"""RunService client speaking HTTP for remote backends.
 
-Reconstructs protocol types from route JSON and maps remote error envelopes
-onto protocol-shaped exceptions.
+Maps remote error envelopes onto protocol-shaped exceptions.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from pydantic import BaseModel
 
 
 class HttpRunService:
-    """Speaks the D2 routes back into the six RunService methods."""
+    """Speaks the HTTP routes back into the six RunService methods."""
 
     def __init__(self, base_url: str, transport: httpx.AsyncBaseTransport | None = None):
         """Open an async client against base_url; transport overrides delivery."""

@@ -1,11 +1,4 @@
-"""ToolRegistry and ToolSpec behavior: registration, validation, dispatch.
-
-Also carries the engine-side E3 acceptance scenario: a deny-listed tool
-attempted mid-run is blocked, recorded by the gate once, and routed per the
-denied_policy -- fail_node fails the run as an ordinary DataError while
-return_to_review parks it waiting_human and completes after a corrected
-resume.
-"""
+"""ToolRegistry and ToolSpec behavior: registration, validation, dispatch."""
 
 import pytest
 from pydantic import BaseModel

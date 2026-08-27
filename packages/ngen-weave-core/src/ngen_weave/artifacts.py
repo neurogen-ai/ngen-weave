@@ -1,18 +1,4 @@
-"""Content-addressed artifact storage under .ngen-weave/projects/.
-
-ArtifactStore persists declared output fields as content-addressed blobs: a
-value's canonical JSON serialization hashes to its address, so identical
-values deduplicate and writes are idempotent. A sidecar JSON beside each blob
-carries the ArtifactMeta and the provenance link (run_id, node_path) tying
-the artifact to its producing activation; v0.4 diffing and export read this
-record shape unchanged.
-
-Classes:
-    ArtifactMeta: Identity of one artifact write: run, node, field, input hashes.
-    ArtifactRecord: Blob hash, disk path, and the meta that produced it.
-    ArtifactStore: Put bytes content-addressed and link sidecar metadata.
-    hash_value: Canonical sha256 of a JSON-serializable value.
-"""
+"""Content-addressed artifact storage under .ngen-weave/projects/."""
 
 from __future__ import annotations
 

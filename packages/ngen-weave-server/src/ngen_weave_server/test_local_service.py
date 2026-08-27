@@ -1,8 +1,6 @@
 """LocalRunService and HTTP-translation-layer tests against a fake engine.
 
-Drives the service both directly (launch/resume/unknown paths/list filters/
-notes) and through httpx.AsyncClient over the FastAPI app: routes translate
-to service calls only; error mapping, filtering, and canonical export bytes.
+Drives the service directly and via httpx.AsyncClient over the FastAPI app.
 """
 
 from __future__ import annotations

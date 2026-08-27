@@ -1,7 +1,4 @@
-"""FastAPI HTTP translation layer: routes translate to LocalRunService calls.
-
-No business logic per the PRD.
-"""
+"""FastAPI HTTP translation layer: routes translate to LocalRunService calls only."""
 
 from __future__ import annotations
 
@@ -106,7 +103,8 @@ def create_app(
             and derives the checkpoint database, models file, and retry
             knobs. Paths for the runs store stay explicit arguments.
         runs_db_path: SQLite database backing the RunStore.
-        runs_dir: Directory scanned for legacy flat-file run imports.
+        runs_dir: Directory holding run review artifacts and the store's runs
+            database sibling; no legacy scanning.
         db_path: LangGraph checkpointer database file.
         models_file: models.json location used when no config_path is given.
         provider: CompletionProvider override (tests embed fakes); None defers

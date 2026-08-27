@@ -1,8 +1,4 @@
-"""Composition root assembling engines, stores, discovery maps, and services.
-
-Wiring shared by CLI commands and by consumers that build a default local
-stack out of configuration and workflow discovery; nothing HTTP-specific.
-"""
+"""Composition root assembling engines, stores, discovery maps, and services."""
 
 from __future__ import annotations
 

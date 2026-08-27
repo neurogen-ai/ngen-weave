@@ -1,10 +1,8 @@
-"""Agent-specific error taxonomy.
+"""Agent-specific error taxonomy: re-exports plus gate-local errors."""
 
-AgentReplyError is re-exported from the core taxonomy rather than redefined:
-it already exists as a retryable NgWeaveError (not DataError), and "exhausted
-without a parseable reply" is exactly that semantic -- a content failure the
-engine may recover by retrying, unlike DataError failures which never retry.
-"""
+# AgentReplyError is re-exported rather than redefined: it already exists as a
+# retryable NgWeaveError (not DataError) -- "exhausted without a parseable reply"
+# is a content failure the engine may recover by retrying, which DataError never does.
 
 from ngen_weave.errors import AgentReplyError, DataError, NgWeaveError
 
