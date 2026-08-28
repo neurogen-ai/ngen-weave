@@ -420,9 +420,7 @@ async def test_collected_fanin_unequal_depth_compile_error(tmp_path):
         ConfigError,
         match=r"Reduce has parents at different depths.*\.R1 at depth 0, .*\.R2 at depth 1",
     ):
-        type(
-            "Collected", (Workflow,), {"input_type": Root, "output_type": Final, "build": build}
-        )
+        type("Collected", (Workflow,), {"input_type": Root, "output_type": Final, "build": build})
 
 
 async def test_dispatch_target_receives_sender_output(tmp_path):

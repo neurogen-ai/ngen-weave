@@ -62,9 +62,7 @@ class PerRunBudgetEngine(Engine):
         node_path: str,
         metadata: RunMetadata | None,
     ) -> bool:
-        budget = self.per_workflow_budgets.get(
-            run_file.workflow, self._settings.budget
-        )
+        budget = self.per_workflow_budgets.get(run_file.workflow, self._settings.budget)
         saved = self._settings
         self._settings = dataclasses.replace(saved, budget=budget)
         try:

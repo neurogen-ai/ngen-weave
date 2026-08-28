@@ -1533,9 +1533,7 @@ class Engine:
         never through config.
         """
         thread_id = f"{run_id}:{checkpoint_ns}" if nested else run_id
-        config = self._invocation_config(
-            run_id, checkpoint_ns, resuming, resume_value, drive_state
-        )
+        config = self._invocation_config(run_id, checkpoint_ns, resuming, resume_value, drive_state)
         config["configurable"]["thread_id"] = thread_id
         async with self._open_graph(compiled) as graph:
             return await graph.ainvoke(seed, config=config)
