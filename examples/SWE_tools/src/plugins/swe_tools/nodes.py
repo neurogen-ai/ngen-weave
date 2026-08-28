@@ -44,6 +44,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from functools import partial
 from typing import ClassVar
 
 from ngen_weave.agent.node import AgentNode
@@ -71,13 +72,22 @@ from .cache import Cache, GateVerdict, carry_forward
 # with pi's full tool set — the example targets a scratch checkout via
 # SWE_TOOLS_REPO_ROOT, which is also where the subprocess runs. The factory
 # form resolves that env var lazily at activation time, matching tools.py.
+#
+# Each activation narrows pi's own tool surface via the -t allowlist:
+# scouting and review are read-only work (bash/ls/grep/find), the dev worker
+# additionally edits files (edit/write). There is no dedicated read tool in
+# these sessions — the agents read through bash (cat/sed) instead.
+
+_INSPECT_TOOLS = ("bash", "ls", "grep", "find")
+_DEV_TOOLS = ("bash", "ls", "grep", "edit", "write")
 
 
-def _pi_rpc_executor(provider=None):
+def _pi_rpc_executor(provider=None, *, tools: tuple[str, ...]):
     return PiRpcAgentExecutor(
         provider,
         binary="pi",
         cwd=os.environ.get("SWE_TOOLS_REPO_ROOT"),
+        extra_args=("-t", ",".join(tools)),
     )
 
 # --- JSON prompt helper --------------------------------------------------------
@@ -791,28 +801,28 @@ class ReviewerWorker(CarryAgent):
     """Reviews the diff against the instruction item; BLOCKING/MAJOR/MINOR.
 
     Runs as a pi RPC session, so the reviewer inspects the actual repo with
-    read/grep instead of judging the diff summary alone.
+    grep/find instead of judging the diff summary alone.
     """
 
     description = "Verify the plan step was implemented in the diff."
     parsed_type = ReviewReportReply
     permissions = PermissionSet(allowed_tools=("read_file", "grep"))
-    executor = _pi_rpc_executor
+    executor = partial(_pi_rpc_executor, tools=_INSPECT_TOOLS)
     agent_task = {
         "role": "reviewer",
         "task": (
             "Verify that the instruction item (step) below has been "
             "implemented in the diff. The carried diff is a summary: use "
-            "read/grep to inspect the actual repo files and confirm each "
-            "claim before reporting it. Report only what the code justifies: "
-            "no invented issues, no severity inflation. Cite exact file "
-            "paths and line ranges as evidence for every finding."
+            "grep/find and bash to inspect the actual repo files and confirm "
+            "each claim before reporting it. Report only what the code "
+            "justifies: no invented issues, no severity inflation. Cite "
+            "exact file paths and line ranges as evidence for every finding."
         ),
         "response_type": "json",
         "rules": [
             (
-                "Inspection only: do not modify, create, or delete files "
-                "during review."
+                "Inspection only: your tools are bash, ls, grep, and find — "
+                "do not modify, create, or delete files during review."
             ),
             "Report only issues caused or made reachable by this diff.",
             (
@@ -888,19 +898,19 @@ class ScoutAgent(CarryAgent):
 
     description = "Search the repo for files and snippets answering the objective."
     parsed_type = FileSummary
-    # pi supplies its own tools (read/grep/find/bash); the node's PermissionSet
+    # pi supplies its own tools; the node's PermissionSet
     # only documents intent and protects a harness swap-back (pi bypasses it).
     permissions = PermissionSet(allowed_tools=("list_dir", "read_file", "bash"))
-    executor = _pi_rpc_executor
+    executor = partial(_pi_rpc_executor, tools=_INSPECT_TOOLS)
     agent_task = {
         "role": "scout",
         "task": (
             "Search the repo for the files and snippets that answer the "
             "objective in this context. Move fast, but do not guess: prefer "
             "targeted search (grep with specific symbols or paths) and "
-            "selective reading over broad sweeps. Start from paths and "
-            "symbols the context already names; reserve unscoped grep for "
-            "exhaustive verification."
+            "selective reading (bash cat/sed for exact ranges) over broad "
+            "sweeps. Start from paths and symbols the context already "
+            "names; reserve unscoped grep for exhaustive verification."
         ),
         "response_type": "json",
         "rules": [
@@ -911,8 +921,8 @@ class ScoutAgent(CarryAgent):
                 "needing changes, constraints and open questions."
             ),
             (
-                "Inspection only: do not modify, create, or delete files "
-                "while scouting."
+                "Inspection only: your tools are bash, ls, grep, and find — "
+                "do not modify, create, or delete files while scouting."
             ),
             (
                 "When done, set the file_summary field in your final output "
@@ -935,7 +945,7 @@ class DevAgent(CarryAgent):
     description = "Implement the dev instructions against the repo files."
     parsed_type = DevChangesReply
     permissions = PermissionSet(allowed_tools=("read_file", "write_file"))
-    executor = _pi_rpc_executor
+    executor = partial(_pi_rpc_executor, tools=_DEV_TOOLS)
     agent_task = {
         "role": "dev",
         "task": (
@@ -957,9 +967,10 @@ class DevAgent(CarryAgent):
                 "diff summary; do not silently redesign."
             ),
             (
-                "You can run shell commands and checks: verify your change "
-                "(imports, tests, whatever exists) before reporting, and "
-                "reread the files you changed."
+                "Your tools are bash, ls, grep, edit, and write — there is no "
+                "dedicated read tool: read files through bash (cat/sed) "
+                "before editing. Run checks that exist (imports, tests) and "
+                "reread the files you changed before reporting."
             ),
             (
                 "When done, set the diff field in your final output object; a "
