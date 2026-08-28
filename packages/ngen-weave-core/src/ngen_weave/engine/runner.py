@@ -72,6 +72,22 @@ _USAGE_KEY = "__ngen_usage__"
 Usage = tuple[int, int, float]  # tokens_in_context, tokens_total, cost_usd
 
 
+@dataclasses.dataclass
+class _DriveState:
+    """Outcome bookkeeping for exactly one drive of one run.
+
+    Owned by a single _drive invocation instead of the Engine, so two
+    overlapping drives behind one engine (e.g. via LocalRunService) cannot
+    erase each other's pause, cancel, or waiting decisions. The driver rides
+    it through the invocation config under the ngen_drive_state key, which
+    is how node-side code (emitters, interrupt paths) reaches the same object.
+    """
+
+    waiting: dict | None = None  # set by the emitter on waiting_human
+    boundary_stop: dict | None = None  # outcome of the last boundary breach
+    breach_emitted: set[str] = dataclasses.field(default_factory=set)  # budget records landed
+
+
 class CompiledGraph:
     """A compiled workflow plus its frozen per-node variant table.
 
@@ -474,14 +490,13 @@ class Engine:
                 retry_backoff_ms=retry_backoff_ms,
             )
         )
+        # Engine-level deliberately: cancel requests must be visible to
+        # whichever drive is running that run id, not parked per-drive.
         self._cancel_flags: set[str] = set()  # per-run-id cancel requests
-        self._boundary_stop: dict | None = None  # outcome of the last boundary breach
-        self._breach_emitted: set[str] = set()  # runs whose budget record landed
         self._compiled: dict[tuple, CompiledGraph] = {}
         self._compiling: set[int] = set()  # ids of classes mid-compilation
         self._memory: Any = None  # root-level memory checkpointer
         self._memory_by_graph: dict[int, Any] = {}  # one saver per graph level
-        self._waiting: dict | None = None  # set by the emitter on waiting_human
 
     # --- cooperative cancellation and the activation boundary ------------------
 
@@ -505,7 +520,13 @@ class Engine:
             self.store.set_status(run_id, "cancelled")
             self._cancel_flags.discard(run_id)
 
-    def _at_boundary(self, run_file: RunFile, node_path: str, metadata: RunMetadata | None) -> bool:
+    def _at_boundary(
+        self,
+        state: _DriveState,
+        run_file: RunFile,
+        node_path: str,
+        metadata: RunMetadata | None,
+    ) -> bool:
         """Return True when the driver must stop before the next activation.
 
         Checks run in order -- cancel flag first, then budget, then observers
@@ -518,18 +539,19 @@ class Engine:
         (a breach fires when observed reaches the limit; a limit of -1, the
         BUDGET_UNLIMITED sentinel, is uncapped). On a budget breach
         this emits exactly one budget_exhausted record naming the crossing
-        activation and flips _boundary_stop to a paused outcome whose waiting
-        dict carries node_path plus reason; a paused run later resumes by
+        activation and flips the drive's boundary_stop to a paused outcome
+        whose waiting dict carries node_path plus reason; a paused run later
+        resumes by
         driving with a None seed on the SAME checkpoint namespace, so
         LangGraph schedules the next node from its persisted channel state
         without replaying committed ones.
         """
         run_id = run_file.run_id
         if run_id in self._cancel_flags:
-            self._boundary_stop = {"status": "cancelled"}
+            state.boundary_stop = {"status": "cancelled"}
             return True
         budget = self._settings.budget
-        if budget is None or run_id in self._breach_emitted:
+        if budget is None or run_id in state.breach_emitted:
             return False
         cost_usd, activations = self.store.usage_totals(run_id)
         # Treat None OR the -1 sentinel as unlimited BEFORE any comparison;
@@ -549,19 +571,23 @@ class Engine:
             dimension, limit, observed = "cost_usd", budget.cost_usd, cost_usd
         else:
             return False
-        self._breach_emitted.add(run_id)
-        self._emitter(run_id, node_path)(
+        state.breach_emitted.add(run_id)
+        self._emitter(state, run_id, node_path)(
             "budget_exhausted",
             {"dimension": dimension, "limit": limit, "observed": observed},
         )
-        self._boundary_stop = {
+        state.boundary_stop = {
             "status": "paused",
             "waiting": {"node_path": node_path, "reason": "budget_exhausted"},
         }
         return True
 
     def _observe_boundary(
-        self, compiled: CompiledGraph, run_id: str, batch: list[ProvenanceRecord]
+        self,
+        state: _DriveState,
+        compiled: CompiledGraph,
+        run_id: str,
+        batch: list[ProvenanceRecord],
     ) -> bool:
         """Evaluate declared observers over this boundary's committed activations.
 
@@ -577,7 +603,7 @@ class Engine:
         iterations equals its retry attempt count, so gt(iterations, n) on a
         leaf watches retries. Each firing emits one observer_firing record;
         multiple firings at one boundary each land their record and the run
-        pauses once via the same _boundary_stop mechanism budgets use.
+        pauses once via the same boundary_stop mechanism budgets use.
         """
         table = self._observer_table(compiled)
         fired = False
@@ -590,7 +616,7 @@ class Engine:
                 pred = obs.predicate
                 if not pred.evaluate(meta):
                     continue
-                self._emitter(run_id, record.node_path)(
+                self._emitter(state, run_id, record.node_path)(
                     "observer_firing",
                     {
                         "predicate": pred.describe(),
@@ -601,7 +627,7 @@ class Engine:
                         "action": obs.action,
                     },
                 )
-                self._boundary_stop = {
+                state.boundary_stop = {
                     "status": "paused",
                     "waiting": {
                         "node_path": record.node_path,
@@ -770,7 +796,8 @@ class Engine:
         async def fn(state: dict, config: RunnableConfig) -> dict:
             run_id = config["configurable"].get("ngen_run_id", config["configurable"]["thread_id"])
             node_path = join_path(cell["base"], path)
-            emit = self._emitter(run_id, node_path)
+            drive_state = config["configurable"]["ngen_drive_state"]
+            emit = self._emitter(drive_state, run_id, node_path)
             started = time.perf_counter()
             usage: list[Usage] = []
 
@@ -819,7 +846,7 @@ class Engine:
                                 "node_path": ctx.node_path,
                                 "reason": "returned_to_review",
                             }
-                            self._waiting = dict(interruption)
+                            drive_state.waiting = dict(interruption)
                             from langgraph.types import interrupt
 
                             interrupt(interruption)
@@ -969,6 +996,7 @@ class Engine:
             resuming=bool(config["configurable"].get("resuming")),
             resume_value=resume_value,
             nested=True,
+            drive_state=config["configurable"]["ngen_drive_state"],
         )
         if final.get("__interrupt__"):
             # Register a real interrupt on every enclosing graph so a root
@@ -1082,12 +1110,18 @@ class Engine:
             },
         )
 
-    def _emitter(self, run_id: str, node_path: str) -> Callable[[str, dict], None]:
-        """Provenance sink for one activation; unconditional, author-invisible."""
+    def _emitter(
+        self, state: _DriveState, run_id: str, node_path: str
+    ) -> Callable[[str, dict], None]:
+        """Provenance sink for one activation; unconditional, author-invisible.
+
+        The owning drive's state rides in so the closure can register a
+        waiting_human halt on that drive instead of a shared Engine attribute.
+        """
 
         def emit(kind: str, payload: dict) -> None:
             if payload.get("status") == "waiting_human":
-                self._waiting = {"node_path": node_path, "artifact": payload.get("artifact")}
+                state.waiting = {"node_path": node_path, "artifact": payload.get("artifact")}
             record = ProvenanceRecord(
                 version=PROVENANCE_VERSION,
                 run_id=run_id,
@@ -1172,7 +1206,9 @@ class Engine:
             # Rejection leaves the run waiting; nothing else about it changes.
             validate_completion(human_cls.state_type, dict(response))
             digest = hashlib.sha256(json.dumps(response, sort_keys=True).encode()).hexdigest()
-            self._emitter(run_id, node_path)(
+            # Throwaway state: this emitter only lands an artifact_write record,
+            # which never registers a waiting halt.
+            self._emitter(_DriveState(), run_id, node_path)(
                 "artifact_write",
                 {"artifact": info["artifact"], "artifact_sha256": digest},
             )
@@ -1226,9 +1262,9 @@ class Engine:
         waiting_info: dict | None = None
         sink: list[Usage] = []
         started = time.perf_counter()
-        self._waiting = None
-        self._boundary_stop = None
-        self._breach_emitted = set()
+        # One drive, one state: pause/cancel/waiting outcomes accumulate here
+        # so overlapping drives on this engine cannot erase each other's.
+        state = _DriveState()
         # Each fresh drive gets a new checkpoint namespace: LangGraph does not
         # reschedule a node that raised, so replaying the old namespace would
         # end immediately. Interrupt resumes deliberately reuse the namespace,
@@ -1249,15 +1285,16 @@ class Engine:
                 checkpoint_ns=attempt_ns,
                 resuming=resume_payload is not None,
                 resume_value=resume_payload,
+                state=state,
             )
             sink.extend(final.get(_USAGE_KEY, ()))
-            status, output_dump, waiting_info = self._resolve_outcome(compiled, final)
+            status, output_dump, waiting_info = self._resolve_outcome(state, compiled, final)
         except Exception as exc:
             error = {"type": type(exc).__name__, "message": str(exc)}
         if status == "completed":
             # The root workflow is not a node in its own graph, so artifacts
             # it declares persist here, beside its scope's ok record.
-            self._emit_root_scope(compiled, run_id, output_dump or {}, started, sink)
+            self._emit_root_scope(compiled, run_id, output_dump or {}, started, sink, state)
         run_file = self.store.load(run_id)  # reload: nodes appended records meanwhile
         run_file.status = status
         run_file.error = error
@@ -1278,19 +1315,20 @@ class Engine:
         )
 
     def _resolve_outcome(
-        self, compiled: CompiledGraph, final: dict[str, Any]
+        self, state: _DriveState, compiled: CompiledGraph, final: dict[str, Any]
     ) -> tuple[RunStatus, dict | None, dict | None]:
         """Classify the consumed stream's outcome: waiting, boundary, or completed.
 
-        A human halt resolves through the emitter-side _waiting flag; a
-        boundary breach through _at_boundary's _boundary_stop outcome (cancel
+        A human halt resolves through the drive's waiting flag (set by its
+        emitters or by an interrupt path); a boundary breach through the
+        drive's boundary_stop outcome (_at_boundary writes it there -- cancel
         flips to "cancelled", budget pauses carry the waiting contract with
         them); anything else must select and validate a terminal output.
         """
-        if self._waiting is not None:
-            return "waiting_human", None, dict(self._waiting)
-        if self._boundary_stop is not None:
-            return self._boundary_stop["status"], None, self._boundary_stop.get("waiting")
+        if state.waiting is not None:
+            return "waiting_human", None, dict(state.waiting)
+        if state.boundary_stop is not None:
+            return state.boundary_stop["status"], None, state.boundary_stop.get("waiting")
         output_dump = _select_output(workflow_class_path(compiled.root), final)
         compiled.root.output_type.model_validate(output_dump)
         return "completed", output_dump, None
@@ -1302,6 +1340,7 @@ class Engine:
         output_dump: dict,
         started: float,
         sink: list[Usage],
+        state: _DriveState,
     ) -> None:
         """Persist root-scope artifacts and the root class path's ok record."""
         root_path = workflow_class_path(compiled.root)
@@ -1313,7 +1352,7 @@ class Engine:
                 RunContext(
                     run_id=run_id,
                     node_path=root_path,
-                    emit=self._emitter(run_id, root_path),
+                    emit=self._emitter(state, run_id, root_path),
                     provider=self.provider,
                 ),
             )
@@ -1325,7 +1364,7 @@ class Engine:
             elapsed_ms=int((time.perf_counter() - started) * 1000),
             last_output_valid=True,
         )
-        self._emitter(run_id, root_path)(
+        self._emitter(state, run_id, root_path)(
             "node_activation", {"status": "ok", "metadata": dataclasses.asdict(metadata)}
         )
         # Root observers fire here, after the whole graph succeeded: they are
@@ -1335,7 +1374,7 @@ class Engine:
             pred = obs.predicate
             if not pred.evaluate(metadata):
                 continue
-            self._emitter(run_id, root_path)(
+            self._emitter(state, run_id, root_path)(
                 "observer_firing",
                 {
                     "predicate": pred.describe(),
@@ -1356,6 +1395,7 @@ class Engine:
         checkpoint_ns: str,
         resuming: bool,
         resume_value: Any | None,
+        state: _DriveState,
     ) -> dict[str, Any]:
         """Consume the root graph's stream until it ends or a boundary stops it.
 
@@ -1382,7 +1422,7 @@ class Engine:
         covers observers: depth>=2 activations are observed together with
         their enclosing composite at that composite's commit boundary.
         """
-        config = self._invocation_config(run_id, checkpoint_ns, resuming, resume_value)
+        config = self._invocation_config(run_id, checkpoint_ns, resuming, resume_value, state)
         async with self._open_graph(compiled) as graph:
             final: dict[str, Any] = {}
             committed_before = self.store.usage_totals(run_id)[1]
@@ -1395,7 +1435,9 @@ class Engine:
                         continue
                     keys = set(chunk)
                     if "__interrupt__" in keys or compiled.wiring.nodes.keys().isdisjoint(keys):
-                        continue  # halts resolve through _waiting; relay steps write nothing
+                        # Halts resolve through the drive's waiting state;
+                        # relay steps write nothing.
+                        continue
                     self._merge_update(final, chunk)
                     committed_now = self.store.usage_totals(run_id)[1]
                     fresh, committed_before = committed_now - committed_before, committed_now
@@ -1413,12 +1455,13 @@ class Engine:
                     last = batch[-1] if batch else None
                     header = self.store.peek(run_id)
                     if self._at_boundary(
+                        state,
                         header,
                         last.node_path if last else "",
                         _activation_metadata(last),
                     ):
                         break
-                    if self._observe_boundary(compiled, run_id, batch):
+                    if self._observe_boundary(state, compiled, run_id, batch):
                         break
             finally:
                 await stream.aclose()
@@ -1463,6 +1506,7 @@ class Engine:
         checkpoint_ns: str,
         resuming: bool,
         resume_value: Any,
+        drive_state: _DriveState | None = None,
     ) -> dict:
         """Build the LangGraph configurable shared by invoke and stream paths.
 
@@ -1471,6 +1515,9 @@ class Engine:
         top-level invocation, so the root graph threads on the raw run id;
         nested graphs derive a deterministic thread id from the attempt number
         plus full node path, which a resumed run regenerates exactly.
+        drive_state is the owning drive's outcome bookkeeping; node functions
+        read it back out of config so emitters and interrupt paths mutate
+        that drive's state, never an Engine-level attribute.
         """
         thread_id = f"{run_id}:{checkpoint_ns}" if checkpoint_ns else run_id
         return {
@@ -1480,6 +1527,7 @@ class Engine:
                 "checkpoint_ns": checkpoint_ns,
                 "resuming": resuming,
                 "ngen_resume_value": resume_value,
+                "ngen_drive_state": drive_state,
                 "run_attempt": int(checkpoint_ns.split(":")[0].split("-")[1])
                 if checkpoint_ns
                 else 1,
@@ -1521,6 +1569,7 @@ class Engine:
         resuming: bool = False,
         resume_value: Any = None,
         nested: bool = False,
+        drive_state: _DriveState | None = None,
     ) -> dict:
         """Invoke the builder's graph under the run's checkpoint thread.
 
@@ -1535,7 +1584,9 @@ class Engine:
         never through config.
         """
         thread_id = f"{run_id}:{checkpoint_ns}" if nested else run_id
-        config = self._invocation_config(run_id, checkpoint_ns, resuming, resume_value)
+        config = self._invocation_config(
+            run_id, checkpoint_ns, resuming, resume_value, drive_state
+        )
         config["configurable"]["thread_id"] = thread_id
         async with self._open_graph(compiled) as graph:
             return await graph.ainvoke(seed, config=config)
