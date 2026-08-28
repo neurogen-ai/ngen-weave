@@ -13,7 +13,8 @@ executor on activations that are trusted with pi's full tool set (e.g. run it
 in a container or a scratch checkout).
 
 Metadata: each pi turn_end event maps to one model_call provenance record
-(variant None), so budgets and observers still see per-turn token/cost
+(variant None) carrying tokens_total, cost_usd, and duration_ms (wall time
+from turn_start), so budgets and observers still see per-turn token/cost
 traffic; per-activation gate ceilings are the only accounting lost.
 
 Wire handling follows docs/rpc.md: strict JSONL with LF framing (a trailing
@@ -207,6 +208,8 @@ class _RpcSession:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # pi emits single-line JSONL events; 64KB default truncates large tool results
+            limit=16 * 1024 * 1024,
         )
         return self
 
@@ -227,11 +230,19 @@ class _RpcSession:
     async def wait_settled(self, ctx) -> None:
         """Pump events until agent_settled, emitting model_call per turn_end."""
         assert self._proc is not None
+        turn_started: float | None = None
         while True:
             event = await self._readline()
             kind = event.get("type")
-            if kind == "turn_end":
-                self._emit_model_call(event, ctx)
+            if kind == "turn_start":
+                turn_started = asyncio.get_running_loop().time()
+            elif kind == "turn_end":
+                duration_ms = (
+                    int((asyncio.get_running_loop().time() - turn_started) * 1000)
+                    if turn_started is not None
+                    else None
+                )
+                self._emit_model_call(event, ctx, duration_ms)
             elif kind == "agent_settled":
                 return
 
@@ -260,21 +271,31 @@ class _RpcSession:
             raise InfraError(f"pi emitted unparseable JSONL: {exc}: {line[:200]!r}") from exc
 
     @staticmethod
-    def _emit_model_call(event: dict, ctx) -> None:
-        """Map one turn_end event onto the harness's model_call payload shape."""
+    def _emit_model_call(event: dict, ctx, duration_ms: int | None) -> None:
+        """Map one turn_end event onto the harness's model_call payload shape.
+
+        totalTokens is authoritative when present; summing every numeric key
+        would double-count it against its input/output/cache components.
+        """
         usage = (event.get("message") or {}).get("usage") or {}
-        tokens = sum(
-            value
-            for key, value in usage.items()
-            if key != "cost" and isinstance(value, int | float)
-        )
+        total = usage.get("totalTokens")
+        if isinstance(total, int | float):
+            tokens = int(total)
+        else:
+            tokens = sum(
+                value
+                for key, value in usage.items()
+                if key in ("input", "output", "cacheRead", "cacheWrite")
+                and isinstance(value, int | float)
+            )
         cost = (usage.get("cost") or {}).get("total")
         ctx.emit(
             "model_call",
             {
                 "variant": None,
-                "tokens_total": int(tokens),
+                "tokens_total": tokens,
                 "cost_usd": float(cost) if cost is not None else 0.0,
+                "duration_ms": duration_ms,
             },
         )
 

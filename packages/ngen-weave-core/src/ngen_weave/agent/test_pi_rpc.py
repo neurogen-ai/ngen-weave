@@ -25,7 +25,7 @@ round_no = 0
 
 def usage(n):
     return {"input": 10 * n, "output": 5 * n, "cacheRead": 0, "cacheWrite": 0,
-            "cost": {"total": 0.01 * n}}
+            "totalTokens": 15 * n, "cost": {"total": 0.01 * n}}
 
 def emit(obj, crlf=False):
     sys.stdout.write(json.dumps(obj) + ("\r\n" if crlf else "\n"))
@@ -45,6 +45,7 @@ for line in sys.stdin:
         round_no += 1
         emit({"id": rid, "type": "response", "command": "prompt", "success": True})
         emit({"type": "agent_start"})
+        emit({"type": "turn_start"})
         if sleep:
             time.sleep(sleep)
         emit({"type": "turn_end", "message": {"role": "assistant", "usage": usage(round_no)},
@@ -53,6 +54,7 @@ for line in sys.stdin:
     elif t == "follow_up":
         round_no += 1
         emit({"id": rid, "type": "response", "command": "follow_up", "success": True})
+        emit({"type": "turn_start"})
         emit({"type": "turn_end", "message": {"role": "assistant", "usage": usage(round_no)},
               "toolResults": []})
         emit({"type": "agent_settled"})
@@ -102,9 +104,12 @@ async def test_first_round_success_and_provenance(tmp_path, monkeypatch):
     executor, ctx, env = make_env(tmp_path)
     out = await executor.execute("do it", _Out, None, None, ctx)
     assert out == _Out(text="hi")
-    assert env["emitted"] == [
-        ("model_call", {"variant": None, "tokens_total": 15, "cost_usd": 0.01})
-    ]
+    assert env["emitted"] and all(kind == "model_call" for kind, _ in env["emitted"])
+    payload = env["emitted"][0][1]
+    assert payload["variant"] is None
+    assert payload["tokens_total"] == 15  # totalTokens, not 30 (double-counted)
+    assert payload["cost_usd"] == 0.01
+    assert isinstance(payload["duration_ms"], int) and payload["duration_ms"] >= 0
 
 
 async def test_repair_loop_recovers_on_follow_up(tmp_path, monkeypatch):
