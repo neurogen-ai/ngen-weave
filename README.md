@@ -12,9 +12,13 @@ Runs are exposed through a CLI, a FastAPI service, and MCP tools, so the same wo
 
 Requirements: Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
+The repo is a uv workspace: the root project plus `packages/ngen-weave-core`, `packages/ngen-weave-cli`, `packages/ngen-weave-server`, and `packages/ngen-weave-mcp`. Plain `uv sync` only installs the root project's dependencies (the CLI), which is why `uv run uvicorn ...` fails with `ModuleNotFoundError` out of the box. Sync every workspace member instead:
+
 ```console
-$ uv sync
+$ uv sync --all-packages
 ```
+
+(To sync just one package, use `uv sync --package ngen-weave-server`.)
 
 Install the canonical example workflow (`examples/code_review`, which wires up a draft → gate → finalize / human-review path):
 
@@ -56,10 +60,12 @@ $ uv run ngen-weave status <run-id>
 ### Serving and MCP
 
 ```console
-$ uvicorn "ngen_weave_server.app:create_app" --factory --port 8000
+$ uv run uvicorn "ngen_weave_server.app:create_app" --factory --port 8000
 $ uv run ngen-weave-mcp --root examples/code_review        # stdio transport
 $ uv run ngen-weave-mcp-http --root examples/code_review   # streamable HTTP at /mcp
 ```
+
+Run uvicorn through `uv run` so it uses the project venv; a bare `uvicorn` resolves to whatever your shell PATH has. The `--factory` flag is required because `create_app()` returns the app rather than being the app itself.
 
 MCP tools discover workflows from installed distributions plus a project manifest (`ngen-weave.json`) next to `--root`. For testing, the MCP servers accept `NGEN_WEAVE_FAKE_PROVIDER=1`, which replaces real model calls with canned replies.
 
