@@ -1,0 +1,5 @@
+{
+    "modules": [
+        "plugins.swe_tools.workflows"
+    ]
+}

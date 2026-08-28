@@ -1,0 +1,3 @@
+{
+    "instruction": "Why is the ingestion pipeline slow for large CSVs, and what would it take to make it stream rows instead of loading whole files? Identify the files involved."
+}
