@@ -1,4 +1,4 @@
-"""FastAPI HTTP translation layer: routes translate to LocalRunService calls only."""
+"""FastAPI HTTP translation layer: routes translate the core LocalRunService into HTTP only."""
 
 from __future__ import annotations
 
@@ -14,13 +14,12 @@ from ngen_weave.engine.state import RunStatus
 from ngen_weave.engine.store import RunStore
 from ngen_weave.errors import ConfigError, DataError, NgWeaveError
 from ngen_weave.export import dump_run_json
+from ngen_weave.local_service import LocalRunService
 from ngen_weave.models.provider import CompletionProvider
 from ngen_weave.service import RunFilters, UnknownRunError
 from ngen_weave.wiring import LazyProvider, default_provider, merged_registry
 from ngen_weave.workflow import Workflow
 from pydantic import BaseModel
-
-from ngen_weave_server.local import LocalRunService
 
 
 class LaunchBody(BaseModel):

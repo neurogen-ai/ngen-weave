@@ -9,8 +9,7 @@ import pytest
 import yaml
 from conftest import make_local_service
 from ngen_weave.provenance import ProvenanceRecord
-from ngen_weave.workflow import workflow_class_path
-from ngen_weave_server.test_local_service import (
+from ngen_weave.test_local_service import (
     Final,
     Review,
     Root,
@@ -18,6 +17,7 @@ from ngen_weave_server.test_local_service import (
     make_review_flow,
     make_worker,
 )
+from ngen_weave.workflow import workflow_class_path
 
 RESPONSE = {"verdict": "approve", "notes": ""}
 REPLIES = ['{"text":"done"}']

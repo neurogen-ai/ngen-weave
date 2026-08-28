@@ -1,4 +1,4 @@
-"""Composition root assembling engines, stores, discovery maps, and services."""
+"""Composition root assembling engines, stores, discovery maps, and services entirely from core."""
 
 from __future__ import annotations
 
@@ -148,20 +148,14 @@ def build_service(
     Loads `config_path` when given, wires config, merged discovery, engine,
     and store through build_stack, and wraps them in LocalRunService. The
     optional models-file and checkpoint-db overrides win over any configured
-    values. The server package is imported lazily so stdio-only installs
-    never need it.
+    values.
 
     Raises:
         ConfigError: Unknown keys or unresolvable workflow/model references
             when config_path is given.
     """
-    try:
-        from ngen_weave_server.local import LocalRunService
-    except ImportError as exc:  # pragma: no cover - exercised only without extras
-        raise ConfigError(
-            "the local RunService requires the ngen-weave-server package; "
-            "install ngen-weave-server or ngen-weave[server]"
-        ) from exc
+    from ngen_weave.local_service import LocalRunService
+
     stack = build_stack(
         _load_config(config_path),
         provider=provider,

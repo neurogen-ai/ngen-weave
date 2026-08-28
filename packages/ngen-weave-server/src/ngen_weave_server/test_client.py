@@ -11,11 +11,7 @@ from ngen_weave import registry
 from ngen_weave.engine.state import RunFile
 from ngen_weave.errors import ConfigError, InfraError, NgWeaveError
 from ngen_weave.service import RunFilters, UnknownRunError
-from ngen_weave.workflow import workflow_class_path
-from pydantic import BaseModel
-
-from ngen_weave_server.client import HttpRunService
-from ngen_weave_server.test_local_service import (
+from ngen_weave.test_local_service import (
     Final,
     Piece,
     Review,
@@ -26,6 +22,10 @@ from ngen_weave_server.test_local_service import (
     make_review_flow,
     make_worker,
 )
+from ngen_weave.workflow import workflow_class_path
+from pydantic import BaseModel
+
+from ngen_weave_server.client import HttpRunService
 
 
 @pytest.fixture(autouse=True)

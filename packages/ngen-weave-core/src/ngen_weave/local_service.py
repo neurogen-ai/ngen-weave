@@ -1,7 +1,9 @@
-"""Local in-process implementation of the RunService protocol: wires the LangGraph-backed
-Engine and RunStore behind the six protocol methods; HTTP layers live in their own modules."""
+"""In-process RunService over Engine and RunStore: launches, resumes, and
+reports runs through one engine; the HTTP layers live in the server package."""
 
 from __future__ import annotations
+
+from pydantic import BaseModel, ValidationError
 
 from ngen_weave.engine.runner import Engine
 from ngen_weave.engine.state import RunFile
@@ -16,7 +18,6 @@ from ngen_weave.service import (
     summaries,
 )
 from ngen_weave.workflow import Workflow
-from pydantic import BaseModel, ValidationError
 
 
 class LocalRunService:

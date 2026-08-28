@@ -7,11 +7,9 @@ import pytest
 from ngen_weave import registry
 from ngen_weave.engine.runner import Engine
 from ngen_weave.engine.store import RunStore
+from ngen_weave.local_service import LocalRunService
 from ngen_weave.service import RunService
-from ngen_weave.workflow import Workflow
-from ngen_weave_server.client import HttpRunService
-from ngen_weave_server.local import LocalRunService
-from ngen_weave_server.test_local_service import (
+from ngen_weave.test_local_service import (
     Final,
     Piece,
     Review,
@@ -22,6 +20,8 @@ from ngen_weave_server.test_local_service import (
     make_review_flow,
     make_worker,
 )
+from ngen_weave.workflow import Workflow
+from ngen_weave_server.client import HttpRunService
 from tests.fakes import FakeProvider
 
 

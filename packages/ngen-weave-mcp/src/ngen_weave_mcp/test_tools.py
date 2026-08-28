@@ -113,7 +113,7 @@ async def client_session(server):
 
 def make_service(tmp_path, replies, discovery_map):
     """LocalRunService over a FakeProvider engine plus its store, for row checks."""
-    from ngen_weave_server.local import LocalRunService
+    from ngen_weave.local_service import LocalRunService
     from tests.fakes import FakeProvider
 
     provider = FakeProvider(replies)

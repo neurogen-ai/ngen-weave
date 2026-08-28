@@ -342,9 +342,9 @@ async def test_criterion_4_denied_tool_reports_failed_run_and_exports_record(
     run, and ngen-weave export-run emits JSON carrying the permission_denied
     record with the configured policy.
     """
+    from ngen_weave.local_service import LocalRunService
     from ngen_weave.registry import reset as registry_reset
     from ngen_weave_cli.main import app
-    from ngen_weave_server.local import LocalRunService
     from tests.fakes import FakeProvider
 
     try:

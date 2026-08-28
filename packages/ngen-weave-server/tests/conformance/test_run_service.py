@@ -7,8 +7,7 @@ import json
 import pytest
 from ngen_weave.engine.state import RunFile
 from ngen_weave.service import RunFilters, UnknownRunError
-from ngen_weave.workflow import workflow_class_path
-from ngen_weave_server.test_local_service import (
+from ngen_weave.test_local_service import (
     Final,
     Piece,
     Review,
@@ -18,6 +17,7 @@ from ngen_weave_server.test_local_service import (
     make_review_flow,
     make_worker,
 )
+from ngen_weave.workflow import workflow_class_path
 
 pytestmark = [pytest.mark.conformance]
 

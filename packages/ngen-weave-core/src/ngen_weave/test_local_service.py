@@ -9,10 +9,15 @@ from typing import Literal
 
 import httpx
 import pytest
+from ngen_weave_server.app import create_app
+from pydantic import BaseModel
+from tests.fakes import FakeProvider
+
 from ngen_weave import registry
 from ngen_weave.engine.runner import Engine
 from ngen_weave.engine.store import RunStore
 from ngen_weave.export import dump_run_json
+from ngen_weave.local_service import LocalRunService
 from ngen_weave.service import RunFilters, UnknownRunError
 from ngen_weave.workflow import (
     END,
@@ -22,11 +27,6 @@ from ngen_weave.workflow import (
     Workflow,
     workflow_class_path,
 )
-from pydantic import BaseModel
-from tests.fakes import FakeProvider
-
-from ngen_weave_server.app import create_app
-from ngen_weave_server.local import LocalRunService
 
 
 @pytest.fixture(autouse=True)
