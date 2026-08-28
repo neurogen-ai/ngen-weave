@@ -1355,7 +1355,7 @@ wheels = [
 
 [[package]]
 name = "ngen-weave"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "ngen-weave-cli" },
@@ -1382,7 +1382,7 @@ dev = [
 
 [[package]]
 name = "ngen-weave-cli"
-version = "0.1.3"
+version = "0.2.1"
 source = { editable = "packages/ngen-weave-cli" }
 dependencies = [
     { name = "ngen-weave-core" },
@@ -1397,7 +1397,7 @@ requires-dist = [
 
 [[package]]
 name = "ngen-weave-core"
-version = "0.1.3"
+version = "0.2.1"
 source = { editable = "packages/ngen-weave-core" }
 dependencies = [
     { name = "jsonschema" },
@@ -1420,7 +1420,7 @@ requires-dist = [
 
 [[package]]
 name = "ngen-weave-mcp"
-version = "0.1"
+version = "0.2.1"
 source = { editable = "packages/ngen-weave-mcp" }
 dependencies = [
     { name = "mcp" },
@@ -1439,7 +1439,7 @@ requires-dist = [
 
 [[package]]
 name = "ngen-weave-server"
-version = "0.1"
+version = "0.2.1"
 source = { editable = "packages/ngen-weave-server" }
 dependencies = [
     { name = "fastapi" },
