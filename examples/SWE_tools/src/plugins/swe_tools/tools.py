@@ -9,6 +9,7 @@ anything precious.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -19,6 +20,8 @@ from ngen_weave.errors import DataError
 ROOT_ENV = "SWE_TOOLS_REPO_ROOT"
 
 _READ_LIMIT = 8000
+_BASH_OUTPUT_LIMIT = 16000
+_BASH_DEFAULT_TIMEOUT_S = 30
 
 
 def _root() -> Path:
@@ -96,4 +99,46 @@ WRITE_FILE = _tool(
         "required": ["path", "content"],
     },
     _write_file,
+)
+
+
+async def _bash(args: dict) -> dict:
+    command = args["command"]
+    timeout_s = int(args.get("timeout_s", _BASH_DEFAULT_TIMEOUT_S))
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=_root(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except TimeoutError:
+        return {
+            "command": command,
+            "error": f"timed out after {timeout_s}s",
+            "timed_out": True,
+        }
+    output = stdout.decode(errors="replace")
+    return {
+        "command": command,
+        "output": output[:_BASH_OUTPUT_LIMIT],
+        "truncated": len(output) > _BASH_OUTPUT_LIMIT,
+        "exit_code": proc.returncode,
+    }
+
+
+BASH = _tool(
+    "bash",
+    "Run a shell command inside the repo root (combined stdout+stderr). "
+    'Returns {command, output, truncated, exit_code} or {command, error, timed_out}.',
+    {
+        "type": "object",
+        "properties": {
+            "command": {"type": "string"},
+            "timeout_s": {"type": "integer", "minimum": 1, "maximum": 120},
+        },
+        "required": ["command"],
+    },
+    _bash,
 )

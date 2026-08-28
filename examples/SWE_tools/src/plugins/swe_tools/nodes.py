@@ -59,7 +59,7 @@ from ngen_weave.workflow import (
 from pydantic import BaseModel, ValidationError
 
 from .cache import Cache, GateVerdict, carry_forward
-from .tools import LIST_DIR, READ_FILE, WRITE_FILE
+from .tools import BASH, LIST_DIR, READ_FILE, WRITE_FILE
 
 # --- reply schemas: strict per-node produced fields --------------------------
 
@@ -543,12 +543,12 @@ class Oracle(CarryWorker):
 
 
 class ScoutAgent(CarryAgent):
-    """Finds files and snippets answering the instruction; read-only tools."""
+    """Finds files and snippets answering the instruction; read tools + bash."""
 
     description = "Search the repo for files and snippets answering the objective."
     parsed_type = FileSummary
-    tools: ClassVar[Sequence[ToolSpec]] = (LIST_DIR, READ_FILE)
-    permissions = PermissionSet(allowed_tools=(LIST_DIR.name, READ_FILE.name))
+    tools: ClassVar[Sequence[ToolSpec]] = (LIST_DIR, READ_FILE, BASH)
+    permissions = PermissionSet(allowed_tools=(LIST_DIR.name, READ_FILE.name, BASH.name))
 
 
 class DevAgent(CarryAgent):
