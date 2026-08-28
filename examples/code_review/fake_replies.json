@@ -1,0 +1,4 @@
+[
+  "{\"review\":\"Looks fine: small textual change.\",\"diff\":\"--- a/x\\n+++ b/x\\n@@ -1 +1 @@\\n-hello\\n+world\\n\"}",
+  "{\"reviewed_diff\":\"--- a/x\\n+++ b/x\\n@@ -1 +1 @@\\n-hello\\n+world\\n\",\"verdict\":\"pass\"}"
+]
