@@ -877,12 +877,22 @@ def _check_multi_parent(
 def _check_fanin(w: _Wiring, cls: type[Workflow], path: str) -> None:
     """Rule 3b: every multi-parent target must fit exactly one declared form.
 
+    Two scope restrictions ride alongside: multi-parent targets cannot also
+    receive conditional edges (join freshness is not defined for loops), and a
+    looping graph — any back edge over static or conditional edges — forbids
+    multi-parent targets outright. Single-static-parent targets may take
+    conditional edges; that is the retry-loop shape (Branch D, Step 7).
+
     Rule 4 rides the same machinery: START joins as a pseudo-source whose
     output_type is the composite's input_type, so entry edges (plain or into=)
     are checked here like any other edge, and nothing about boundaries is a
     second type-checking notion.
     """
     incoming, dispatched = _incoming(w)
+    # Back edges over static AND conditional edges, DFS from START: any loop in
+    # the wiring forbids multi-parent joins outright. Single-parent targets stay
+    # legal, so retry loops (a control conditionally re-entering a worker) work.
+    back = _back_edges(_all_edges(w))
     for dst, parents in incoming.items():
         if dst == END:
             continue
@@ -891,10 +901,18 @@ def _check_fanin(w: _Wiring, cls: type[Workflow], path: str) -> None:
         # counts toward parent counts; rule 4 still type-checks its edge.
         ordinary = [(s, f) for s, f in parents if s != START]
         entry_slot = next((f for s, f in parents if s == START), None)
-        if ordinary and dst in dispatched:
+        if len(ordinary) > 1 and dst in dispatched:
             raise ConfigError(
-                f"{path}: {dst} receives both static and conditional edges; "
-                "input assembly cannot know how many parents fire"
+                f"{path}: {dst} receives multiple static parents and conditional "
+                "edges; join freshness is not defined for loops "
+                "(see plans/design/loops-and-joins.md)"
+            )
+        if len(ordinary) > 1 and back:
+            src, tgt = sorted(back)[0]
+            raise ConfigError(
+                f"{path}: join target {dst} has multiple static parents but the "
+                f"graph loops ({src} -> {tgt} is a back edge); multi-parent joins "
+                "are forbidden in looping graphs (see plans/design/loops-and-joins.md)"
             )
         slots = [(s, f) for s, f in parents if f is not None]
         if not ordinary:
