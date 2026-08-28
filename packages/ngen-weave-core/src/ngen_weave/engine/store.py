@@ -216,19 +216,32 @@ class RunStore:
                     (run_id,),
                 )
 
-    def set_status(self, run_id: str, status: RunStatus) -> RunFile:
-        """Transition a run's status and return the updated file.
+    def set_status(
+        self, run_id: str, status: RunStatus, expected: frozenset[RunStatus] | None = None
+    ) -> bool:
+        """Persist one status column update.
+
+        With expected, the update applies only when the current status is a
+        member; returns whether a row changed. Unknown run ids raise
+        UnknownRunError either way.
 
         Raises:
             UnknownRunError: Unknown run id.
         """
+        if expected is None:
+            sql = "UPDATE runs SET status = ? WHERE run_id = ?"
+            params: tuple = (status, run_id)
+        else:
+            placeholders = ", ".join("?" for _ in expected)
+            sql = f"UPDATE runs SET status = ? WHERE run_id = ? AND status IN ({placeholders})"
+            params = (status, run_id, *sorted(expected))
         with self._conn:
-            cursor = self._conn.execute(
-                "UPDATE runs SET status = ? WHERE run_id = ?", (status, run_id)
-            )
+            cursor = self._conn.execute(sql, params)
         if cursor.rowcount != 1:
-            raise UnknownRunError(f"unknown run: {run_id}")
-        return self.load(run_id)
+            if self._fetch_row(run_id) is None:
+                raise UnknownRunError(f"unknown run: {run_id}")
+            return False
+        return True
 
     def peek(self, run_id: str) -> RunFile:
         """Return a header-only RunFile (empty records) with current status.

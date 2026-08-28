@@ -1,5 +1,7 @@
 """Budget enforcement and cooperative cancellation (C1 semantics)."""
 
+import asyncio
+
 import pytest
 from pydantic import BaseModel
 from tests.fakes import FakeProvider
@@ -10,6 +12,7 @@ from ngen_weave.config import Budget, RunSettings
 from ngen_weave.engine import Engine
 from ngen_weave.engine.state import RunResult
 from ngen_weave.engine.store import RunStore
+from ngen_weave.service import UnknownRunError
 from ngen_weave.workflow import END, START, Worker, Workflow, workflow_class_path
 from ngen_weave.workflow import Workflow as _W
 
@@ -255,6 +258,66 @@ async def test_double_cancel_idempotent_and_terminal_noop(tmp_path):
     assert finished.status == "completed"
     engine.cancel(finished.run_id)  # terminal runs are untouched
     assert engine.store.load(finished.run_id).status == "completed"
+
+
+async def test_cancel_racing_completion_is_noop(tmp_path):
+    w1 = make_worker("Rcw1", Root, Piece)
+    w2 = make_worker("Rcw2", Piece, Final)
+    chain = make_chain([w1, w2], Root, Final)
+    engine = make_engine(tmp_path, settings=make_settings(Budget(steps=1)))
+    paused = await engine.run(chain, Root(text="hi"))
+    assert paused.status == "paused"
+
+    # Drive the paused run to completion out-of-band with a raised cap while
+    # cancel fires mid-drive, then again after completion. Whatever the
+    # peek/set race window sees, cancel must not raise and completion must
+    # win: the status stays "completed" with no cancelled record anywhere.
+    resumed = make_engine(
+        tmp_path,
+        settings=make_settings(Budget(steps=10)),
+        provider=FakeProvider(['{"text":"two"}']),
+    )
+    completion = asyncio.create_task(resumed.resume(paused.run_id))
+    engine.cancel(paused.run_id)  # races the in-flight resume; never raises
+    finished = await completion
+    assert finished.status == "completed"
+
+    engine.cancel(paused.run_id)  # after completion: terminal no-op
+    rf = engine.store.load(paused.run_id)
+    assert rf.status == "completed"
+    # No cancelled trace landed in the record stream (kinds come only from
+    # the pause plus the clean completion).
+    assert {r.kind for r in rf.records} <= {
+        "node_activation",
+        "model_call",
+        "budget_exhausted",
+    }
+    assert all("cancelled" not in str(r.payload) for r in rf.records)
+
+
+def test_set_status_expected_mismatch_returns_false(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    run_id = store.create("m.W", {})
+
+    # Mismatched expected: no row changes, returns False, status untouched.
+    assert (
+        store.set_status(run_id, "completed", expected=frozenset({"paused", "waiting_human"}))
+        is False
+    )
+    assert store.load(run_id).status == "running"
+
+    # Matching expected applies the update and returns True.
+    assert store.set_status(run_id, "paused", expected=frozenset({"running"})) is True
+    assert store.load(run_id).status == "paused"
+
+    # No expected behaves as before.
+    assert store.set_status(run_id, "completed") is True
+
+    # Unknown run ids raise UnknownRunError either way.
+    with pytest.raises(UnknownRunError, match="unknown run"):
+        store.set_status("nope", "cancelled")
+    with pytest.raises(UnknownRunError, match="unknown run"):
+        store.set_status("nope", "cancelled", expected=frozenset({"running"}))
 
 
 # --- nested granularity -------------------------------------------------------

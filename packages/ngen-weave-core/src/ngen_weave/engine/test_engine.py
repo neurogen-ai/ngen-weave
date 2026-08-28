@@ -125,8 +125,7 @@ class TestRunStore:
     def test_set_status_transitions(self, tmp_path: Path):
         store = RunStore(tmp_path / "runs")
         run_id = store.create("m.W", {})
-        updated = store.set_status(run_id, "failed")
-        assert updated.status == "failed"
+        assert store.set_status(run_id, "failed") is True
         assert store.load(run_id).status == "failed"
 
     def test_list_returns_every_run(self, tmp_path: Path):

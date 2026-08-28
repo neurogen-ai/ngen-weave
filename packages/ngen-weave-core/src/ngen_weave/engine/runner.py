@@ -44,6 +44,7 @@ from ngen_weave.provenance import (
 )
 from ngen_weave.registry import get as registry_get
 from ngen_weave.schema_errors import format_validation_error
+from ngen_weave.service import UnknownRunError
 from ngen_weave.workflow import (
     END,
     START,
@@ -506,19 +507,27 @@ class Engine:
         A run that is actively driven stops after its current node finishes;
         the driver then persists status "cancelled". A paused or waiting run
         is cancelled immediately, and cancelling an already-terminal run is a
-        no-op. Same-process only: the flag lives on this Engine instance.
+        no-op. If the run resolves to a terminal status between the peek and
+        the transition, that terminal outcome wins and the cancel is treated
+        as the no-op it races. Same-process only: the flag lives on this
+        Engine instance.
 
         Raises:
             UnknownRunError: Unknown run id.
         """
         run_file = self.store.peek(run_id)
+        if run_file is None:
+            raise UnknownRunError(run_id)
         if run_file.status in {"completed", "failed", "cancelled"}:
             return  # already terminal; cancelling again is a no-op
         if run_file.status == "running":
             self._cancel_flags.add(run_id)
-        else:
-            self.store.set_status(run_id, "cancelled")
-            self._cancel_flags.discard(run_id)
+            return
+        # Conditional in SQL: if the run reached a terminal status between the
+        # peek above and this update, the update matches no row and returns
+        # False -- that race resolves to the terminal status, equivalent to
+        # the no-op case; do not retry or warn.
+        self.store.set_status(run_id, "cancelled", expected=frozenset({"paused", "waiting_human"}))
 
     def _at_boundary(
         self,
@@ -1300,13 +1309,16 @@ class Engine:
         run_file.error = error
         run_file.output = output_dump
         self.store.save(run_file)
+        if status == "paused":
+            return RunResult(run_id, status, None, waiting_info)
+        # Every non-paused drive outcome (terminal or waiting_human) clears
+        # any pending cancel request: later drives start clean. A paused run
+        # keeps its flag so the request still applies when the drive resumes.
+        self._cancel_flags.discard(run_id)
         if status == "waiting_human":
             assert waiting_info is not None
             return RunResult(run_id, status, None, waiting_info)
-        if status == "paused":
-            return RunResult(run_id, status, None, waiting_info)
         if status == "cancelled":
-            self._cancel_flags.discard(run_id)  # consumed; later drives start clean
             return RunResult(run_id, status, None, None)
         if error is not None:
             return RunResult(run_id, status, None, None)
