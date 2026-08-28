@@ -170,6 +170,27 @@ async def test_cancel_before_completion_ends_cancelled_and_double_cancel_is_idem
     assert (await svc.status(handle.run_id)).status == "cancelled"
 
 
+async def test_list_reports_accurate_cost(service):
+    """list_runs cost_usd equals the summed model_call record costs exactly."""
+    flow = _waiting_flow("K")
+    path = workflow_class_path(flow)
+    svc = service(HUMAN_REPLIES, {path: flow})
+
+    handle = await svc.launch(path, Root(text="hi"))
+    result = await svc.resume(handle.run_id, payload={"verdict": "approve"})
+
+    assert result.status == "completed"
+    run_file = await svc.status(handle.run_id)
+    expected = sum(
+        float(record.payload.get("cost_usd") or 0.0)
+        for record in run_file.records
+        if record.kind == "model_call"
+    )
+    summaries = await svc.list_runs()
+    cost_by_run = {summary.run_id: summary.cost_usd for summary in summaries}
+    assert cost_by_run[handle.run_id] == pytest.approx(expected, abs=1e-9)
+
+
 async def test_unknown_run_error_from_every_method_for_bogus_id(service):
     """Every run-id-taking method raises UnknownRunError for an unknown id."""
     worker = make_worker("WUb", Root, Final)

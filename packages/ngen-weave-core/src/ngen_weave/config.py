@@ -24,7 +24,10 @@ class Budget:
     """Run spending caps under run.budget; at least one limit required.
 
     cost_usd caps accumulated model-call spend (compared against the store's
-    incrementally maintained totals); steps caps node_activation counts. A
+    incrementally maintained totals); steps caps node_activation counts, counting
+    every activation record including retries, invalid outputs, human interruptions,
+    and scope completions, so a limit trips earlier than successful-node-count
+    intuition suggests. A
     breach pauses the run at the next activation boundary instead of failing
     it, so a resume with a raised cap continues from the same checkpoint.
     Config parsing normalizes BUDGET_UNLIMITED (-1) to None here; direct
