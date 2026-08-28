@@ -7,13 +7,13 @@ no discovery channel lists.
 
 PlanSWETask:
 
-    START -> Scout -> PlanDraft -> PlanGate --pass--> END
-                                 --fail(revise)--> PlanRework --cond--> PlanDraft
-                                 --fail(fail_count >= ORACLE_AFTER)--> Oracle -> END
+    START -> PlanDraft -> PlanGate --pass--> END
+                        --fail--> PlanRework -> END
 
-    The revise loop re-enters through dispatch-only nodes, so the gate's
-    feedback and the fail counter survive each iteration (retry loops into
-    nodes with static parents would re-fire on stale outputs instead).
+    PlanRework does not loop back into the planner: it grills the agent who
+    invoked the workflow about where the plan leaves gaps, with pointed
+    questions and the scouting it owes. The caller answers on the next
+    invocation by feeding those answers in as clarifications.
 
 ImplementPlanStep:
 
@@ -24,6 +24,13 @@ ImplementPlanStep:
                       --pass--> DevAgent -> ReviewerWorker -> END
                       --fail--> ScoutClarify --cond--> StepPlan
                       --fail(fail_count >= ORACLE_AFTER)--> Oracle -> END
+
+    The entry gate only passes a single part of the overall plan, specific
+    enough to implement. The plan->scout loop (StepPlan -> PlanDetailGate ->
+    StepScout -> ScoutCheckGate -> ScoutClarify -> StepPlan) exits only once
+    the scout check gate is sure the plan cites enough evidence from the
+    scout that it can be implemented well, step by step, to achieve the
+    meta-plan instruction given to this workflow.
 """
 
 from __future__ import annotations
@@ -46,7 +53,6 @@ from .nodes import (
     PlanRefine,
     PlanRework,
     ReviewerWorker,
-    Scout,
     ScoutAgent,
     ScoutCheckGate,
     ScoutClarify,
@@ -65,9 +71,7 @@ def _go_router(state: dict) -> str:
 
 def _plan_router(state: dict) -> str:
     verdict = state[workflow_class_path(PlanGate)]
-    if verdict["pass"]:
-        return "pass"
-    return "oracle" if verdict["fail_count"] >= ORACLE_AFTER else "revise"
+    return "pass" if verdict["pass"] else "fail"
 
 
 def _step_router(state: dict) -> str:
@@ -91,47 +95,50 @@ class PlanSWETask(Workflow):
     """Turn an instruction into a gated plan of single-window steps."""
 
     description = (
-        "Plan a SWE task: scout, draft a discrete single-context-window plan, "
-        "gate it, loop plan rework, escalate to the oracle after repeated failures."
+        "Plan a SWE task: draft a discrete single-context-window plan that "
+        "achieves the instruction with no knowledge gaps, gate it for "
+        "sufficiency, and on failure grill the caller about the gaps."
     )
     human_description = (
-        "Scouts the instruction, drafts a plan of discrete steps with evidence, "
-        "and loops plan rework until the gate passes or the oracle is consulted."
+        "Drafts a plan of concrete, directive steps that achieve the "
+        "instruction, gates it on being sufficient to implement, and on "
+        "failure returns pointed questions back to the calling agent, "
+        "including the scouting the caller still owes."
     )
     input_type = Cache
     output_type = Cache
 
     def build(self, g: GraphBuilder) -> None:
-        scout = Scout()
         plan_draft = PlanDraft()
         plan_gate = PlanGate()
         plan_rework = PlanRework()
-        oracle = Oracle()
-        for node in (scout, plan_draft, plan_gate, plan_rework, oracle):
+        for node in (plan_draft, plan_gate, plan_rework):
             g.add_node(node)
-        g.add_edge(START, scout)
-        g.add_conditional_edges(scout, _go_router, {"go": plan_draft})
+        g.add_edge(START, plan_draft)
         g.add_edge(plan_draft, plan_gate)
         g.add_conditional_edges(
             plan_gate,
             _plan_router,
-            {"pass": END, "revise": plan_rework, "oracle": oracle},
+            {"pass": END, "fail": plan_rework},
         )
-        g.add_conditional_edges(plan_rework, _go_router, {"go": plan_draft})
-        g.add_edge(oracle, END)
+        g.add_edge(plan_rework, END)
 
 
 class ImplementPlanStep(Workflow):
     """Implement one plan step: gate, plan detail, scout answers, dev, review."""
 
     description = (
-        "Implement a plan step: gate the step, plan detail with honest unknowns, "
-        "scout answers, write the code, and review the diff against the step."
+        "Implement a plan step: gate that exactly one specific plan part was "
+        "fed in, plan detail with honest unknowns, and loop plan and scout "
+        "until the plan cites enough evidence to implement step by step "
+        "toward the meta-plan instruction, then write and review."
     )
     human_description = (
-        "Checks the plan step is specific, plans abstractions and files honestly, "
-        "scouts the plan's open questions, writes the code, and returns a "
-        "BLOCKING/MAJOR/MINOR review of the diff against the step."
+        "Checks exactly one specific plan step was fed in, drafts a plan with "
+        "honest unknowns, and scouts until the check gate is satisfied the "
+        "plan can be implemented well, step by step, to achieve the meta-plan "
+        "instruction. Then writes the code and returns a BLOCKING/MAJOR/MINOR "
+        "review of the diff against the step."
     )
     input_type = Cache
     output_type = Cache

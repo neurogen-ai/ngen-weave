@@ -1,5 +1,10 @@
 """Filesystem ToolSpecs for the Scout and Dev agents.
 
+Currently unused by the registered workflows: ScoutAgent, DevAgent, and
+ReviewerWorker run as pi RPC sessions (pi's own tools, see nodes.py). Keep
+this module as the gated harness-mode fallback — point a CarryAgent at these
+specs when you want the PermissionGate back in front of the filesystem.
+
 Tool roots are anchored at the SWE_TOOLS_REPO_ROOT environment variable
 (default: the working directory). These are example-grade tools: paths are
 resolved against the root and escapes are rejected, but otherwise this is the

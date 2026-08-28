@@ -16,8 +16,10 @@ rather than the engine-managed Worker / Control leaves:
   reply onto the carried cache instead.
 - A Control leaf's output is constructed from the verdict alone; a CarryGate
   re-emits the whole input cache plus `pass` and an incremented `fail_count`.
-- CarryAgent drives AgentNode's gated tool loop, then merges the final answer
-  onto the cache.
+- CarryAgent drives AgentNode's tool loop, then merges the final answer onto
+  the cache. ScoutAgent, DevAgent, and ReviewerWorker run that loop as a pi
+  RPC session via PiRpcAgentExecutor (pi's own tools, gate bypassed); the
+  gated file-system toolset in tools.py is the harness-mode fallback.
 
 Loop shapes
 -----------
@@ -39,12 +41,14 @@ loop, i.e. through dispatch-only re-entry).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+import os
+import re
 from typing import ClassVar
 
 from ngen_weave.agent.node import AgentNode
 from ngen_weave.agent.permissions import PermissionSet
-from ngen_weave.agent.tools import ToolSpec
+from ngen_weave.agent.pi_rpc import PiRpcAgentExecutor
 from ngen_weave.engine.runner import parse_boolean, parse_output, render_prompt
 from ngen_weave.errors import AgentReplyError, ConfigError
 from ngen_weave.schema_errors import format_validation_error
@@ -59,7 +63,49 @@ from ngen_weave.workflow import (
 from pydantic import BaseModel, ValidationError
 
 from .cache import Cache, GateVerdict, carry_forward
-from .tools import BASH, LIST_DIR, READ_FILE, WRITE_FILE
+
+# One activation = one headless pi subprocess driving pi's own agent loop
+# (bash/read/grep tools, retries, compaction) instead of the gated
+# text-only loop over CompletionProvider. SAFETY (see ngen_weave.agent.pi_rpc):
+# pi bypasses the PermissionGate entirely, so these activations are trusted
+# with pi's full tool set — the example targets a scratch checkout via
+# SWE_TOOLS_REPO_ROOT, which is also where the subprocess runs. The factory
+# form resolves that env var lazily at activation time, matching tools.py.
+
+
+def _pi_rpc_executor(provider=None):
+    return PiRpcAgentExecutor(
+        provider,
+        binary="pi",
+        cwd=os.environ.get("SWE_TOOLS_REPO_ROOT"),
+    )
+
+# --- JSON prompt helper --------------------------------------------------------
+
+_PLACEHOLDER = re.compile(r"\{(\w+)\}")
+_SENTINEL = "\x00"
+_UNSENTINEL = re.compile(_SENTINEL + r"(\w+)" + _SENTINEL)
+
+
+def _json_prompt(spec: dict) -> str:
+    """Serialize a JSON prompt spec into a render_prompt template.
+
+    The spec IS the prompt: a JSON object with a role, task, response_type,
+    response_format, rules, and input fields. Serializing with json.dumps
+    keeps the spec canonical JSON for the model; braces are then doubled so
+    str.format_map (inside render_prompt) treats them as literals, while
+    {placeholder} fields on the carried cache are kept single-braced and
+    interpolated at run time. Interpolated values may contain raw newlines
+    or quotes; models read past that, and the spec half stays parseable.
+    """
+
+    text = _PLACEHOLDER.sub(
+        lambda m: f"{_SENTINEL}{m.group(1)}{_SENTINEL}",
+        json.dumps(spec, indent=2),
+    )
+    text = text.replace("{", "{{").replace("}", "}}")
+    return _UNSENTINEL.sub(lambda m: "{" + m.group(1) + "}", text)
+
 
 # --- reply schemas: strict per-node produced fields --------------------------
 
@@ -230,6 +276,12 @@ class CarryAgent(AgentNode):
     all-optional), so run() re-validates the fields the agent actually set
     against `parsed_type` — a missing required produced field is a loud,
     retryable AgentReplyError instead of a silent default.
+
+    `agent_task` is a JSON task spec (role, task, response_type, rules,
+    required output fields) injected as an extra cache field before the run,
+    so it rides inside the serialized user turn on top of the carried
+    context. carry_forward still merges onto the ORIGINAL input, so the
+    injected spec never travels downstream.
     """
 
     _defer_validation = True
@@ -237,6 +289,7 @@ class CarryAgent(AgentNode):
     input_type = Cache
     output_type = Cache
     parsed_type: ClassVar[type[BaseModel]]
+    agent_task: ClassVar[dict]
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -247,9 +300,16 @@ class CarryAgent(AgentNode):
             raise ConfigError(
                 f"{workflow_class_path(cls)}: CarryAgent requires a parsed_type ClassVar"
             )
+        task = getattr(cls, "agent_task", None)
+        if not (isinstance(task, dict) and task):
+            raise ConfigError(
+                f"{workflow_class_path(cls)}: CarryAgent requires a non-empty "
+                "agent_task dict ClassVar"
+            )
 
     async def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
-        produced = await super().run(input, ctx)
+        enriched = input.model_copy(update={"agent_task": self.agent_task})
+        produced = await super().run(enriched, ctx)
         echoed = {key: getattr(produced, key) for key in produced.model_fields_set}
         try:
             strict = self.parsed_type.model_validate(echoed)
@@ -271,8 +331,13 @@ class SpecGate(CarryGate):
     prompt = (
         "You are the scout's spec gate. Decide whether the instruction below "
         "states a clear, specific question or objective that a targeted "
-        "codebase search can answer without guessing.\n\n"
-        "Reply with exactly one word: true or false.\n\n"
+        "codebase search can answer without guessing. It is specific enough "
+        "when it names concrete symbols, files, paths, or a checkable "
+        "deliverable, or states them derivably. Vague ambition ('make it "
+        "better', 'look at the code') is not specific.\n\n"
+        "Reply with exactly one word: the bare boolean true or false. Do not "
+        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
+        "boolean by downstream logic.\n\n"
         "Instruction:\n{instruction}\n"
     )
 
@@ -283,9 +348,14 @@ class DevSpecGate(CarryGate):
     description = "Gate on dev instructions naming abstractions and target files."
     prompt = (
         "You are the dev gate. Decide whether the instructions below are clear "
-        "enough to implement: they should name the abstractions to build and "
-        "the files that should contain them, or state them derivably.\n\n"
-        "Reply with exactly one word: true or false.\n\n"
+        "enough to implement without weighing trade-offs: they should name the "
+        "abstractions to build, the files that should contain them, and what "
+        "is out of scope, or state these derivably. The instructions are a "
+        "boundary, not a line-by-line edit plan; judgement-free execution is "
+        "the bar. 'Improve the module' fails.\n\n"
+        "Reply with exactly one word: the bare boolean true or false. Do not "
+        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
+        "boolean by downstream logic.\n\n"
         "Instruction:\n{instruction}\n\n"
         "Dev instructions:\n{dev_instructions}\n"
     )
@@ -301,29 +371,43 @@ class ReviewValidityGate(CarryGate):
 
 
 class PlanGate(CarryGate):
-    """Plan gate: discrete steps, evidence-backed, single-context-window each."""
+    """Plan gate: is this plan sufficient to implement the instruction?"""
 
-    description = "Gate on the plan consisting of discrete achievable steps."
+    description = "Gate on the plan achieving the instruction with no gaps."
     prompt = (
-        "You are the plan gate. Decide whether the plan below consists of "
-        "discrete steps, each reliably achievable within a single context "
-        "window, supported by arguments or evidence (citations of files or "
-        "snippets).\n\n"
-        "Reply with exactly one word: true or false.\n\n"
+        "You are the plan gate. Ask the questions that decide the "
+        "instruction's completion, then judge: is this plan sufficient to "
+        "implement them? It passes only when it achieves the instruction, "
+        "leaves no knowledge gaps, and every step is concrete and points the "
+        "implementer in a direction: a deliverable, the approach or files or "
+        "symbols to use, and how to verify it. A step that says 'explore', "
+        "'investigate', or defers to a scouting pass fails. A step that "
+        "needs a judgement call the plan has not pre-made is not discrete.\n\n"
+        "Reply with exactly one word: the bare boolean true or false. Do not "
+        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
+        "boolean by downstream logic.\n\n"
+        "Instruction:\n{instruction}\n\n"
         "Plan:\n{plan}\n"
     )
 
 
 class StepGate(CarryGate):
-    """ImplementPlanStep entry gate: is the plan step specific enough?"""
+    """ImplementPlanStep entry gate: one plan part, specific enough to implement."""
 
-    description = "Gate on the plan step being concrete enough to implement."
+    description = "Gate on exactly one plan part, specific enough to implement."
     prompt = (
-        "You are the implementation gate. Decide whether the plan step below "
-        "is specific enough to implement: it should state a clear deliverable "
-        "and name concrete files or abstractions where determinable.\n\n"
-        "Reply with exactly one word: true or false.\n\n"
-        "Plan step:\n{step}\n"
+        "You are the implementation gate. Ask: are my instructions specific "
+        "enough to implement, and was exactly one part of the agent's overall "
+        "plan fed into this workflow? The instructions below pass only when "
+        "they are a single plan part that states a clear deliverable and "
+        "names concrete files or abstractions where determinable. A bundle "
+        "of several plan parts, or the whole plan, is not one part and fails. "
+        "Instructions that ask the implementer to weigh trade-offs are also "
+        "not specific enough.\n\n"
+        "Reply with exactly one word: the bare boolean true or false. Do not "
+        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
+        "boolean by downstream logic.\n\n"
+        "Instructions:\n{step}\n"
     )
 
 
@@ -334,21 +418,35 @@ class PlanDetailGate(CarryGate):
     prompt = (
         "You are the plan detail gate. Decide whether the implementation plan "
         "below BOTH names concrete abstractions and their target files AND is "
-        "honest about unknowns (it must explicitly list open questions wherever "
-        "information is missing rather than papering over them).\n\n"
-        "Reply with exactly one word: true or false.\n\n"
+        "honest about unknowns: it must explicitly list open questions "
+        "wherever information is missing rather than papering over them. A "
+        "plan that speculates instead of listing what it does not know fails. "
+        "The plan is a boundary, not an edit plan: function bodies and "
+        "per-line edit instructions are not required.\n\n"
+        "Reply with exactly one word: the bare boolean true or false. Do not "
+        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
+        "boolean by downstream logic.\n\n"
         "Plan:\n{plan}\n"
     )
 
 
 class ScoutCheckGate(CarryGate):
-    """Gate on the scout having answered the plan's open questions."""
+    """Gate on the plan->scout loop: plan plus scout evidence suffices."""
 
-    description = "Gate on the scout summary answering the plan's questions."
+    description = "Gate on the plan citing enough scout evidence to implement."
     prompt = (
-        "You are the scout check gate. Decide whether the scout summary below "
-        "answers every open question the implementation plan raises.\n\n"
-        "Reply with exactly one word: true or false.\n\n"
+        "You are the scout check gate. Decide whether the plan->scout loop "
+        "may exit: only when the implementation plan, read together with the "
+        "scout summary, can be implemented well, step by step, to achieve "
+        "the meta instruction below. Every part of the plan must cite "
+        "concrete evidence from the scout summary: exact file paths, "
+        "symbols, or line ranges that tell the implementer what to change "
+        "and how. If any part still rests on 'likely' or would send the "
+        "implementer scouting, fail.\n\n"
+        "Reply with exactly one word: the bare boolean true or false. Do not "
+        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
+        "boolean by downstream logic.\n\n"
+        "Meta instruction:\n{instruction}\n\n"
         "Plan:\n{plan}\n\n"
         "Scout summary:\n{file_summary}\n"
     )
@@ -362,14 +460,33 @@ class Clarify(CarryWorker):
 
     description = "Rewrite a vague instruction into a specific objective."
     parsed_type = ClarifiedInstruction
-    prompt = (
-        "The spec gate judged the instruction below not specific enough for a "
-        "targeted search. Rewrite it into a clear, specific objective, keeping "
-        "every original constraint, and state what you clarified.\n\n"
-        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
-        '{{"instruction": "<rewritten objective>", "clarifications": "<what you clarified>"}}\n\n'
-        "Instruction:\n{instruction}\n\n"
-        "Clarifications so far:\n{clarifications}\n"
+    prompt = _json_prompt(
+        {
+            "role": "scout spec fixer",
+            "task": (
+                "The instruction failed the spec gate: it does not state a "
+                "clear, targeted-search question. Rewrite it into one specific "
+                "objective. Name concrete symbols, files, paths, or a "
+                "checkable deliverable; keep every original constraint. Do not "
+                "invent facts the instruction does not give: if information is "
+                "missing, name it in clarifications instead of filling it in."
+            ),
+            "response_type": "json",
+            "response_format": {
+                "instruction": "the rewritten objective",
+                "clarifications": (
+                    "what you changed, and any information still missing"
+                ),
+            },
+            "rules": [
+                "Reply with exactly one JSON object and nothing else.",
+                "A rewrite that drops a constraint or invents a fact is a failure.",
+            ],
+            "input": {
+                "instruction": "{instruction}",
+                "clarifications_so_far": "{clarifications}",
+            },
+        }
     )
 
 
@@ -378,50 +495,136 @@ class DevClarify(CarryWorker):
 
     description = "Produce concrete abstractions and target files for the dev."
     parsed_type = DevInstructionsReply
-    prompt = (
-        "The dev gate judged the instructions below too vague to implement. "
-        "Produce concrete development instructions: name the abstractions to "
-        "build and the files that should contain them.\n\n"
-        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
-        '{{"dev_instructions": "<abstractions and files>"}}\n\n'
-        "Instruction:\n{instruction}\n\n"
-        "Current dev instructions:\n{dev_instructions}\n"
+    prompt = _json_prompt(
+        {
+            "role": "dev instruction fixer",
+            "task": (
+                "The dev instructions failed the dev gate: they are too vague "
+                "to implement without weighing trade-offs. Rewrite them so "
+                "they name the abstractions to build, the files that should "
+                "contain them, and what is out of scope. The instructions are "
+                "a boundary, not an edit plan: no function bodies, no "
+                "per-line steps."
+            ),
+            "response_type": "json",
+            "response_format": {
+                "dev_instructions": (
+                    "abstractions, their target files, and exclusions"
+                ),
+            },
+            "rules": [
+                "Reply with exactly one JSON object and nothing else.",
+                (
+                    "Ground every abstraction in what already exists; cite "
+                    "files or symbols where determinable."
+                ),
+            ],
+            "input": {
+                "instruction": "{instruction}",
+                "current_dev_instructions": "{dev_instructions}",
+            },
+        }
     )
 
 
 class PlanDraft(CarryWorker):
-    """PlanSWETask planner: discrete, evidence-backed, window-sized steps."""
+    """PlanSWETask planner: concrete, directive, single-window steps."""
 
-    description = "Draft a plan of discrete, evidence-backed steps."
+    description = "Draft a plan of discrete, concrete, directive steps."
     parsed_type = PlanReply
-    prompt = (
-        "Draft a plan for the objective below. The plan must consist of "
-        "discrete steps, each reliably achievable within a single context "
-        "window, supported by arguments or evidence (cite files or snippets "
-        "from the scout summary). Consult the clarifications if present.\n\n"
-        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
-        '{{"plan": "<the plan>", "dev_instructions": "<optional implementation notes>"}}\n\n'
-        "Objective:\n{instruction}\n\n"
-        "Scout summary:\n{file_summary}\n\n"
-        "Clarifications:\n{clarifications}\n"
+    prompt = _json_prompt(
+        {
+            "role": "planner",
+            "task": (
+                "Draft a plan for the objective below. Each step stands "
+                "alone, states a concrete deliverable and how to verify it, "
+                "and fits one context window. Every step points the "
+                "implementer in a direction: name the approach, the files or "
+                "symbols to touch, and what done looks like, so no step ends "
+                "with 'go find out'. The plan achieves the instruction, not a "
+                "loose reading of it, and leaves no knowledge gaps: every "
+                "ambiguity is resolved by a decision in the plan, never "
+                "deferred to a scouting pass. Consult the clarifications if "
+                "present."
+            ),
+            "response_type": "json",
+            "response_format": {
+                "plan": "the numbered plan",
+                "dev_instructions": (
+                    "optional implementation notes for the dev agent"
+                ),
+            },
+            "rules": [
+                "Reply with exactly one JSON object and nothing else.",
+                (
+                    "The plan is a boundary, not an edit plan: no function "
+                    "bodies, no per-file edit instructions."
+                ),
+                (
+                    "No open questions and no explore steps: if information "
+                    "is missing, make the call from what the instruction and "
+                    "clarifications give."
+                ),
+            ],
+            "input": {
+                "objective": "{instruction}",
+                "clarifications": "{clarifications}",
+            },
+        }
     )
 
 
 class PlanRework(CarryWorker):
-    """Plan loop fixer: restate the objective scope after a plan-gate failure."""
+    """Plan fixer: grill the agent who called the planner about the gaps.
 
-    description = "Adjust the planning context after a plan-gate failure."
+    Its output does not loop back into the planner: it ends the run, so the
+    agent who invoked PlanSWETask reads the questions, provides more detail,
+    does more scouting where it lacks knowledge, and re-invokes with its
+    answers as clarifications.
+    """
+
+    description = "Grill the caller about where the plan leaves gaps."
     parsed_type = ClarificationsReply
-    prompt = (
-        "The plan gate rejected the plan below: it does not yet consist of "
-        "discrete steps reliably achievable within a single context window. "
-        "Restate the objective scope and the adjustments the planner should "
-        "make (trim ambition, split steps, note what needs re-scouting).\n\n"
-        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
-        '{{"clarifications": "<adjustments for the planner>"}}\n\n'
-        "Objective:\n{instruction}\n\n"
-        "Rejected plan:\n{plan}\n\n"
-        "Prior clarifications:\n{clarifications}\n"
+    prompt = _json_prompt(
+        {
+            "role": "plan rework grill",
+            "task": (
+                "The plan gate rejected the plan below: it does not achieve "
+                "the instruction, or it leaves knowledge gaps. Your reply "
+                "goes straight back to the agent who called this planner. "
+                "Poke them about where the gaps are: one pointed question per "
+                "gap, numbered, each with your recommended answer. Ask only "
+                "questions relevant to completing the instruction, and "
+                "address the question that decides everything: is this plan "
+                "sufficient to implement it? Tell them to provide more detail "
+                "and to do more scouting first if they do not know the "
+                "answers."
+            ),
+            "response_type": "json",
+            "response_format": {
+                "clarifications": (
+                    "numbered questions to the caller, each with a "
+                    "recommended answer, plus the scouting they owe"
+                ),
+            },
+            "rules": [
+                "Reply with exactly one JSON object and nothing else.",
+                (
+                    "Name each gap concretely: which step, what is missing, "
+                    "what you need to know."
+                ),
+                (
+                    "Do not accept vague answers; a gap the caller could "
+                    "close by scouting their own repo is theirs to scout, "
+                    "not yours to guess."
+                ),
+            ],
+            "input": {
+                "objective": "{instruction}",
+                "rejected_plan": "{plan}",
+                "answers_already_given": "{clarifications}",
+            },
+        }
     )
 
 
@@ -430,14 +633,38 @@ class StepClarify(CarryWorker):
 
     description = "Rewrite a vague plan step into a concrete deliverable."
     parsed_type = StepClarified
-    prompt = (
-        "The implementation gate judged the plan step below not specific "
-        "enough. Rewrite it into a concrete step with a clear deliverable, "
-        "keeping every original constraint, and state what you clarified.\n\n"
-        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
-        '{{"step": "<rewritten step>", "clarifications": "<what you clarified>"}}\n\n'
-        "Plan step:\n{step}\n\n"
-        "Clarifications so far:\n{clarifications}\n"
+    prompt = _json_prompt(
+        {
+            "role": "step spec fixer",
+            "task": (
+                "The plan step failed the implementation gate: it is not "
+                "specific enough. Rewrite it into one concrete step with a "
+                "clear deliverable and, where determinable, the files or "
+                "abstractions it touches. Keep every original constraint; do "
+                "not invent facts."
+            ),
+            "response_type": "json",
+            "response_format": {
+                "step": "the rewritten step",
+                "clarifications": (
+                    "what you changed, and any information still missing"
+                ),
+            },
+            "rules": [
+                "Reply with exactly one JSON object and nothing else.",
+                "A rewrite that drops a constraint is a failure.",
+                (
+                    "If the instructions bundle several plan parts, reduce "
+                    "them to the single part this workflow should implement "
+                    "and list the remaining parts in clarifications so they "
+                    "can be fed back separately."
+                ),
+            ],
+            "input": {
+                "plan_step": "{step}",
+                "clarifications_so_far": "{clarifications}",
+            },
+        }
     )
 
 
@@ -450,17 +677,42 @@ class StepPlan(CarryWorker):
 
     description = "Plan one step: abstractions, target files, open questions."
     parsed_type = PlanReply
-    prompt = (
-        "Write the implementation plan for the plan step below: the "
-        "abstractions to build, the files that should contain them, and the "
-        "open questions the scout must answer. Be honest about unknowns: list "
-        "explicitly everything you do not know yet. Consult the clarifications "
-        "if present.\n\n"
-        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
-        '{{"plan": "<the implementation plan>", '
-        '"dev_instructions": "<what the dev agent should implement>"}}\n\n'
-        "Plan step:\n{step}\n\n"
-        "Clarifications:\n{clarifications}\n"
+    prompt = _json_prompt(
+        {
+            "role": "step planner",
+            "task": (
+                "Write the implementation plan for the plan step below: the "
+                "abstractions to build, the files that should contain them, "
+                "and the open questions the scout must answer. This plan runs "
+                "BEFORE the scout, so it is drafted from the step alone: be "
+                "honest about unknowns and list explicitly everything you do "
+                "not know yet instead of guessing. Consult the clarifications "
+                "if present."
+            ),
+            "response_type": "json",
+            "response_format": {
+                "plan": (
+                    "the implementation plan, with an explicit open-questions "
+                    "section"
+                ),
+                "dev_instructions": "what the dev agent should implement",
+            },
+            "rules": [
+                "Reply with exactly one JSON object and nothing else.",
+                (
+                    "Every unverifiable claim goes in open questions, not "
+                    "stated as fact."
+                ),
+                (
+                    "The plan is a boundary, not an edit plan: contracts and "
+                    "file targets, no function bodies."
+                ),
+            ],
+            "input": {
+                "plan_step": "{step}",
+                "clarifications": "{clarifications}",
+            },
+        }
     )
 
 
@@ -469,50 +721,120 @@ class PlanRefine(CarryWorker):
 
     description = "Restate what the planner must fix after a detail-gate failure."
     parsed_type = ClarificationsReply
-    prompt = (
-        "The plan detail gate rejected the implementation plan below: it must "
-        "name concrete abstractions and target files, and be honest about "
-        "unknowns. Restate precisely what the planner must fix.\n\n"
-        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
-        '{{"clarifications": "<adjustments for the planner>"}}\n\n'
-        "Plan step:\n{step}\n\n"
-        "Rejected plan:\n{plan}\n\n"
-        "Prior clarifications:\n{clarifications}\n"
+    prompt = _json_prompt(
+        {
+            "role": "plan refine fixer",
+            "task": (
+                "The plan detail gate rejected the implementation plan below. "
+                "The gate passes a plan only when it names concrete "
+                "abstractions and their target files AND explicitly lists open "
+                "questions wherever information is missing. Restate precisely "
+                "what the planner must fix, naming the sections that fail the "
+                "bar."
+            ),
+            "response_type": "json",
+            "response_format": {
+                "clarifications": "adjustments for the planner",
+            },
+            "rules": [
+                "Reply with exactly one JSON object and nothing else.",
+                (
+                    "Name each gap concretely: which abstraction or file is "
+                    "missing, which unknown is papered over."
+                ),
+            ],
+            "input": {
+                "plan_step": "{step}",
+                "rejected_plan": "{plan}",
+                "prior_clarifications": "{clarifications}",
+            },
+        }
     )
 
 
 class ScoutClarify(CarryWorker):
-    """Scout loop fixer: restate the plan's unanswered questions."""
+    """Scout loop fixer: name the plan parts that lack scout evidence."""
 
-    description = "Restate unanswered plan questions for the planner."
+    description = "Restate which plan parts lack scout evidence for the planner."
     parsed_type = ClarificationsReply
-    prompt = (
-        "The scout check gate found the scout summary below does not answer "
-        "every open question the implementation plan raises. Restate the "
-        "unanswered questions and how the planner should scope around them.\n\n"
-        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
-        '{{"clarifications": "<adjustments for the planner>"}}\n\n'
-        "Plan:\n{plan}\n\n"
-        "Scout summary:\n{file_summary}\n\n"
-        "Prior clarifications:\n{clarifications}\n"
+    prompt = _json_prompt(
+        {
+            "role": "scout check fixer",
+            "task": (
+                "The scout check gate kept the plan->scout loop open: the "
+                "implementation plan below does not yet cite enough concrete "
+                "evidence from the scout summary to be implemented well, step "
+                "by step, toward the meta instruction. Restate which parts of "
+                "the plan lack evidence and how the planner should rescope or "
+                "re-target the scouting. Evidence means an exact file path, "
+                "symbol, or line range."
+            ),
+            "response_type": "json",
+            "response_format": {
+                "clarifications": "adjustments for the planner",
+            },
+            "rules": [
+                "Reply with exactly one JSON object and nothing else.",
+                "List only the parts lacking evidence; do not relitigate the rest.",
+            ],
+            "input": {
+                "meta_instruction": "{instruction}",
+                "plan": "{plan}",
+                "scout_summary": "{file_summary}",
+                "prior_clarifications": "{clarifications}",
+            },
+        }
     )
 
 
-class ReviewerWorker(CarryWorker):
-    """Reviews the diff against the instruction item; BLOCKING/MAJOR/MINOR."""
+class ReviewerWorker(CarryAgent):
+    """Reviews the diff against the instruction item; BLOCKING/MAJOR/MINOR.
+
+    Runs as a pi RPC session, so the reviewer inspects the actual repo with
+    read/grep instead of judging the diff summary alone.
+    """
 
     description = "Verify the plan step was implemented in the diff."
     parsed_type = ReviewReportReply
-    prompt = (
-        "Verify that the instruction item below has been implemented in the "
-        "diff. Report severity: BLOCKING (not implemented or breaks existing "
-        "behavior), MAJOR (partially implemented), or MINOR (implemented with "
-        "nits). Discuss what is missing.\n\n"
-        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
-        '{{"review_report": "<severity plus discussion>"}}\n\n'
-        "Instruction item:\n{step}\n\n"
-        "Diff:\n{diff}\n"
-    )
+    permissions = PermissionSet(allowed_tools=("read_file", "grep"))
+    executor = _pi_rpc_executor
+    agent_task = {
+        "role": "reviewer",
+        "task": (
+            "Verify that the instruction item (step) below has been "
+            "implemented in the diff. The carried diff is a summary: use "
+            "read/grep to inspect the actual repo files and confirm each "
+            "claim before reporting it. Report only what the code justifies: "
+            "no invented issues, no severity inflation. Cite exact file "
+            "paths and line ranges as evidence for every finding."
+        ),
+        "response_type": "json",
+        "rules": [
+            (
+                "Inspection only: do not modify, create, or delete files "
+                "during review."
+            ),
+            "Report only issues caused or made reachable by this diff.",
+            (
+                "If everything looks good, say so plainly: "
+                "'No issues found.'"
+            ),
+            (
+                "When done, set the review_report field in your final output "
+                "object; a report missing it is a failed run."
+            ),
+        ],
+        "review_report_format": (
+            "First line: 'Verdict: BLOCKING', 'Verdict: MAJOR', "
+            "'Verdict: MINOR', or 'Verdict: OK'. Then one entry per "
+            "finding: severity, location, evidence, and the smallest "
+            "fix. Severities: BLOCKING means the item is not "
+            "implemented or the diff breaks existing behavior; MAJOR "
+            "means partially implemented; MINOR means implemented "
+            "with nits. If nothing qualifies, the report is exactly: "
+            "No issues found."
+        ),
+    }
 
 
 class Oracle(CarryWorker):
@@ -527,37 +849,131 @@ class Oracle(CarryWorker):
 
     description = "Recommends plan/instruction/tool adjustments after repeated failures."
     parsed_type = OracleAdviceReply
-    prompt = (
-        "You are the oracle. The workflow below failed its gate "
-        "{fail_count} times. Given the whole context, recommend adjustments "
-        "to either the plan, the instructions, or the tool calls that should "
-        "follow.\n\n"
-        "Reply with exactly one JSON object and nothing else, no markdown fences:\n"
-        '{{"oracle_notes": "<recommendations>", '
-        '"instruction": "<adjusted objective, or the original if fine>"}}\n\n'
-        "Objective:\n{instruction}\n\n"
-        "Scout summary:\n{file_summary}\n\n"
-        "Plan:\n{plan}\n\n"
-        "Clarifications:\n{clarifications}\n"
+    prompt = _json_prompt(
+        {
+            "role": "oracle",
+            "task": (
+                "The workflow below failed its gate {fail_count} times. "
+                "Diagnose why: name the gate criterion that keeps going unmet "
+                "and the part of the context that keeps missing it. Then "
+                "recommend the smallest set of adjustments to the plan, the "
+                "instructions, or the tool approach that should follow. Do not "
+                "grow scope: a scope problem is resolved by cutting or "
+                "re-scouting, not by retrying harder."
+            ),
+            "response_type": "json",
+            "response_format": {
+                "oracle_notes": "diagnosis first, then recommended adjustments",
+                "instruction": "the adjusted objective, or the original if fine",
+            },
+            "rules": [
+                "Reply with exactly one JSON object and nothing else.",
+                (
+                    "Do not recommend the same approach that already failed; "
+                    "if retries cannot fix it, say so."
+                ),
+            ],
+            "input": {
+                "objective": "{instruction}",
+                "scout_summary": "{file_summary}",
+                "plan": "{plan}",
+                "clarifications": "{clarifications}",
+            },
+        }
     )
 
 
 class ScoutAgent(CarryAgent):
-    """Finds files and snippets answering the instruction; read tools + bash."""
+    """Finds files and snippets answering the instruction; runs as a pi RPC session."""
 
     description = "Search the repo for files and snippets answering the objective."
     parsed_type = FileSummary
-    tools: ClassVar[Sequence[ToolSpec]] = (LIST_DIR, READ_FILE, BASH)
-    permissions = PermissionSet(allowed_tools=(LIST_DIR.name, READ_FILE.name, BASH.name))
+    # pi supplies its own tools (read/grep/find/bash); the node's PermissionSet
+    # only documents intent and protects a harness swap-back (pi bypasses it).
+    permissions = PermissionSet(allowed_tools=("list_dir", "read_file", "bash"))
+    executor = _pi_rpc_executor
+    agent_task = {
+        "role": "scout",
+        "task": (
+            "Search the repo for the files and snippets that answer the "
+            "objective in this context. Move fast, but do not guess: prefer "
+            "targeted search (grep with specific symbols or paths) and "
+            "selective reading over broad sweeps. Start from paths and "
+            "symbols the context already names; reserve unscoped grep for "
+            "exhaustive verification."
+        ),
+        "response_type": "json",
+        "rules": [
+            "Cite exact file paths and line ranges; never cite from memory.",
+            (
+                "Return the minimum context another agent needs to act: "
+                "relevant entry points, key types, data flow, files likely "
+                "needing changes, constraints and open questions."
+            ),
+            (
+                "Inspection only: do not modify, create, or delete files "
+                "while scouting."
+            ),
+            (
+                "When done, set the file_summary field in your final output "
+                "object; a summary missing it is a failed run."
+            ),
+        ],
+        "file_summary_sections": [
+            "Files: path (lines N-M) and why each matters",
+            "Key code: the types, functions, and snippets that matter",
+            "How it connects: the data flow in a few sentences",
+            "Start here: the first file another agent should open, and why",
+            "Open questions: anything the objective asked that you could not verify",
+        ],
+    }
 
 
 class DevAgent(CarryAgent):
-    """Writes the code per the dev instructions; reads and writes files."""
+    """Writes the code per the dev instructions; runs as a pi RPC session."""
 
     description = "Implement the dev instructions against the repo files."
     parsed_type = DevChangesReply
-    tools: ClassVar[Sequence[ToolSpec]] = (READ_FILE, WRITE_FILE)
-    permissions = PermissionSet(allowed_tools=(READ_FILE.name, WRITE_FILE.name))
+    permissions = PermissionSet(allowed_tools=("read_file", "write_file"))
+    executor = _pi_rpc_executor
+    agent_task = {
+        "role": "dev",
+        "task": (
+            "Implement the dev_instructions in this context against the repo "
+            "files. Read the carried context first, validate it against the "
+            "actual code, then make the smallest correct change. Follow the "
+            "patterns already in the codebase; the instructions are the "
+            "contract, but the code is the source of truth for what exists."
+        ),
+        "response_type": "json",
+        "rules": [
+            (
+                "Do not add speculative scaffolding, TODOs, placeholders, or "
+                "scope the instructions did not ask for."
+            ),
+            (
+                "If implementation reveals a decision the instructions do not "
+                "cover, take the narrowest safe reading and record it in the "
+                "diff summary; do not silently redesign."
+            ),
+            (
+                "You can run shell commands and checks: verify your change "
+                "(imports, tests, whatever exists) before reporting, and "
+                "reread the files you changed."
+            ),
+            (
+                "When done, set the diff field in your final output object; a "
+                "report with no diff and no explicit 'no edits made' is a "
+                "failed run."
+            ),
+        ],
+        "diff_sections": [
+            "What changed: file by file, one line each",
+            "Why it matches the instructions",
+            "Validation you ran and what it showed",
+            "Risks and anything you had to decide yourself",
+        ],
+    }
 
 
 # --- mid-level composites (hidden, reusable) -----------------------------------
