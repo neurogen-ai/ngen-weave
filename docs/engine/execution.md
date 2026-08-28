@@ -1,8 +1,8 @@
 # Engine execution model
 
 How `Engine` in `ngen_weave.engine.runner` turns a workflow class into a
-runnable graph and drives a run. Everything here describes implemented v0.1
-behavior; the plans state the requirements, this page states the mechanism.
+runnable graph and drives a run. The plans state the requirements, this page
+states the mechanism as implemented.
 
 ## One build, then a replay
 
@@ -31,9 +31,6 @@ A plain `dict` schema was rejected after testing: LangGraph treats it as a
 single replaceable value, so each update wipes the rest of the state, and two
 nodes in the same superstep clobber each other. Per-key channels merge safely.
 
-Relay nodes (`__relay_N__`) write nothing; their only job is depth alignment
-(below).
-
 ## Input assembly per fan-in form
 
 Each destination's assembly form is fixed at compile time in the plan:
@@ -50,8 +47,8 @@ Each destination's assembly form is fixed at compile time in the plan:
 - dispatch: takes the output of whichever node dispatched here.
 
 Assembly raises a `DataError` naming missing parents if a form's sources have
-not all written; with depth alignment (below) this is unreachable for static
-fan-in and exists as a guard.
+not all written. Equal-depth compilation (below) makes this unreachable for
+static fan-in, so the check remains as a guard.
 
 ## Dispatch semantics
 
@@ -63,23 +60,64 @@ Targets that also declare static parents ignore dispatch for assembly;
 dispatch only triggers execution. This is why a reject edge back to the entry
 child re-runs it on the original request.
 
-## Depth alignment: relay nodes
+## Supported shapes in 0.2.x
 
-LangGraph schedules breadth-first and fires a multi-parent target when any
-trigger arrives, not when all parents have written. A diamond where the paths
-have unequal lengths (the normal shape for collected fan-in: r1 feeds r2 and
-r3, all three feed the reducer) therefore breaks: the reducer fires alongside
-its siblings' children.
+The engine adds no scheduling machinery on top of LangGraph. A node fires when
+any trigger arrives, and the nodes that are ready in one superstep run
+concurrently. Determinism comes from the shapes the compiler accepts, checked
+by `validate_structure` at import time. The design questions deferred past
+0.2.x and the reasoning behind each restriction live in
+`plans/design/loops-and-joins.md`.
 
-The engine computes longest-path levels over static edges (back edges excluded
-so loops stay legal) and inserts identity relay nodes on shorter incoming
-paths until every parent chain reaches a joint target at the same level. All
-parents then complete in the previous superstep, and the target fires exactly
-once. Conditional edges stay direct: dispatch is supposed to fire immediately,
-and loop-back edges go straight to their target.
+Conditional re-entry gives retry loops. A target with exactly one static
+parent may also receive conditional edges, so a control node can route back to
+a mid-chain worker any number of times. The node fires when the conditional
+trigger arrives and reads its static parent's last written output from the
+channel, since channels keep the most recent value until it is overwritten.
+START-delivered entry inputs are always fresh, because START writes them
+before any node runs.
 
-Relays are engine-internal. The editor and validators read topology from the
-dry-run build of the author's own wiring and never see relays.
+Multi-parent fan-in requires equal depth. A slots or collect target with two
+or more ordinary static parents compiles only when every parent sits at the
+same longest-path depth over static edges and the graph contains no back edges
+over static or conditional edges. START pseudo-parents are exempt, since they
+deliver the seeded input before any node runs and never race a join. Equal
+depth means all parents finish in the superstep before the target fires, so
+the target runs exactly once with every source written. Unequal depths and
+multi-parent targets in a looping graph both raise `ConfigError` naming the
+target and the violated rule.
+
+Dispatch stays direct. A conditional edge fires its target in the following
+superstep without waiting on other paths, and a dispatch-only target takes the
+sending node's validated output as its input. That delivery is deterministic
+for a single sender in a superstep; concurrent senders are a known limitation
+(below).
+
+Record ordering is guaranteed per node only. For one node, its
+`node_activation` records (initial attempt, retries, invalid outputs) appear
+in execution order. Across different nodes in the same superstep the
+interleaving is unspecified, because those nodes run concurrently.
+
+## Known limitations
+
+Three races remain in 0.2.x. Each has deferred design work in
+`plans/design/loops-and-joins.md`; none is fixed within the 0.2.x series.
+
+Concurrent dispatch senders race on the last-writer channel. `__ngen_last__`
+is last-wins across all writers of a superstep. When two or more nodes with
+conditional edges to one dispatch-only target fire in the same superstep,
+delivery is nondeterministic and the target may read the wrong sender's
+payload.
+
+Terminal selection under concurrent fan-out to END is completion-order
+dependent. `_select_output` reads the recorded run output from the same
+last-writer channel, so several terminals finishing in one superstep make the
+recorded output nondeterministic.
+
+Join freshness in loops is forbidden, not solved. A join whose parents can
+re-fire at different times has no definition of which writes count as this
+iteration's input. Validation rejects the shape at compile time (multi-parent
+targets in a looping graph) instead of picking semantics.
 
 ## Routers and retries at runtime
 
