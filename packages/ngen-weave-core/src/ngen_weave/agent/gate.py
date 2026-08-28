@@ -16,6 +16,11 @@ class PermissionGate:
     DeniedToolError under "fail_node" (ordinary DataError node failure) or
     ReturnToReviewError under "return_to_review".
 
+    Every executed call emits one tool_call provenance record with the payload
+    {"tool", "node_path", "cost_usd"} (cost_usd is the tool-reported spend,
+    0.0 when the result carries none), so per-call activity is visible in the
+    provenance stream alongside the per-turn model_call records.
+
     Usage accounting is per-activation and pre-call: ceilings are checked before
     executing the next call, so a spent budget blocks further calls rather than
     refunding. Tools report spend by including a numeric "cost_usd" key in their
@@ -55,6 +60,14 @@ class PermissionGate:
         if isinstance(cost, int | float):
             self._spend_usd += float(cost)
         self._calls_used += 1
+        self._ctx.emit(
+            "tool_call",
+            {
+                "tool": name,
+                "node_path": self._ctx.node_path,
+                "cost_usd": float(cost) if isinstance(cost, int | float) else 0.0,
+            },
+        )
         return result
 
     def specs(self) -> tuple:

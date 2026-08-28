@@ -97,8 +97,9 @@ async def test_max_calls_ceiling_denies_after_limit():
     with pytest.raises(DeniedToolError, match="denied"):
         await gate.call("echo", {"n": 3})
     kinds = [kind for kind, _payload in records]
-    assert kinds == ["permission_denied"]
+    assert kinds == ["tool_call", "tool_call", "permission_denied"]
     assert records[0][1]["tool"] == "echo"
+    assert records[-1][1]["tool"] == "echo"
 
 
 async def test_budget_usd_denies_once_spend_observed():
@@ -114,10 +115,35 @@ async def test_budget_usd_denies_once_spend_observed():
     assert second == {"out": 2, "cost_usd": 0.75}
     with pytest.raises(DeniedToolError):
         await gate.call("bill", {"x": 3})
-    assert [kind for kind, _payload in records] == ["permission_denied"]
+    kinds = [kind for kind, _payload in records]
+    assert kinds == ["tool_call", "tool_call", "permission_denied"]
 
 
-async def test_under_budget_calls_never_emit_or_raise():
+async def test_executed_calls_emit_tool_call_records_with_cost():
+    """Every executed call emits one tool_call record carrying tool-reported spend."""
+    records: list = []
+    gate = PermissionGate(
+        make_permitted_registry(0.5), PermissionSet(allowed_tools=("bill",)), make_ctx(records)
+    )
+    await gate.call("bill", {})
+    assert records == [
+        ("tool_call", {"tool": "bill", "node_path": "demo.Root.worker", "cost_usd": 0.5})
+    ]
+
+
+async def test_executed_calls_without_cost_report_zero():
+    records: list = []
+    gate = PermissionGate(
+        make_registry(), PermissionSet(allowed_tools=("echo",)), make_ctx(records)
+    )
+    await gate.call("echo", {"a": 1})
+    assert records == [
+        ("tool_call", {"tool": "echo", "node_path": "demo.Root.worker", "cost_usd": 0.0})
+    ]
+
+
+async def test_under_budget_calls_emit_tool_call_records_only():
+    """Under-ceiling calls emit exactly one tool_call each and never a denial."""
     records: list = []
     gate = PermissionGate(
         make_permitted_registry(0.5),
@@ -125,4 +151,4 @@ async def test_under_budget_calls_never_emit_or_raise():
         make_ctx(records),
     )
     assert await gate.call("bill", {}) == {"out": None, "cost_usd": 0.5}
-    assert records == []
+    assert [kind for kind, _payload in records] == ["tool_call"]

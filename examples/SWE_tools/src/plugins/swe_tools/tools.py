@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import shlex
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -22,6 +24,12 @@ ROOT_ENV = "SWE_TOOLS_REPO_ROOT"
 _READ_LIMIT = 8000
 _BASH_OUTPUT_LIMIT = 16000
 _BASH_DEFAULT_TIMEOUT_S = 30
+
+# Shell commands the bash tool will run; everything else is rejected. Each
+# pipeline/sequence segment's head must be in this set, and command
+# substitution (backticks, $(...), ${...}) is rejected outright.
+_BASH_ALLOWED_HEADS = frozenset({"ls", "grep"})
+_SEGMENT_SPLIT = re.compile(r"\s*(?:\|\||\||&&|&|;)\s*")
 
 
 def _root() -> Path:
@@ -102,8 +110,28 @@ WRITE_FILE = _tool(
 )
 
 
+def _whitelisted(command: str) -> bool:
+    """True iff every segment of the command line starts with an allowed head."""
+    if "`" in command or "$(" in command or "${" in command:
+        return False
+    for segment in _SEGMENT_SPLIT.split(command):
+        tokens = shlex.split(segment)
+        if not tokens or tokens[0] not in _BASH_ALLOWED_HEADS:
+            return False
+    return True
+
+
 async def _bash(args: dict) -> dict:
     command = args["command"]
+    if not _whitelisted(command):
+        return {
+            "command": command,
+            "error": (
+                "command rejected: only "
+                f"{' and '.join(sorted(_BASH_ALLOWED_HEADS))} are allowed"
+            ),
+            "allowed": sorted(_BASH_ALLOWED_HEADS),
+        }
     timeout_s = int(args.get("timeout_s", _BASH_DEFAULT_TIMEOUT_S))
     try:
         proc = await asyncio.create_subprocess_shell(
@@ -130,7 +158,8 @@ async def _bash(args: dict) -> dict:
 
 BASH = _tool(
     "bash",
-    "Run a shell command inside the repo root (combined stdout+stderr). "
+    "Run a whitelisted shell command inside the repo root (combined stdout+stderr). "
+    "Only ls and grep are allowed; everything else is rejected. "
     'Returns {command, output, truncated, exit_code} or {command, error, timed_out}.',
     {
         "type": "object",

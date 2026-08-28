@@ -17,6 +17,10 @@ PROVENANCE_VERSION = 1
 #   permission_denied: {"tool": str, "node_path": str, "policy": str}
 #       Emitted by the agent PermissionGate before raising its denial error;
 #       policy is the PermissionSet denied_policy literal.
+#   tool_call: {"tool": str, "node_path": str, "cost_usd": float}
+#       Emitted by the agent PermissionGate after each executed tool call
+#       (denials emit permission_denied instead, never tool_call); cost_usd
+#       is the tool-reported spend (0.0 when the result carries none).
 #   observer_firing: {"predicate": str, "field": ..., "op": ..., "value": ...,
 #                     "observed": float | int, "action": str}
 #       Emitted when a declared Observer's predicate fires against an
@@ -29,6 +33,7 @@ Kind = Literal[
     "artifact_write",
     "budget_exhausted",
     "permission_denied",
+    "tool_call",
     "observer_firing",
 ]
 
