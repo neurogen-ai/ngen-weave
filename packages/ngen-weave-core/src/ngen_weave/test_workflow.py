@@ -998,6 +998,7 @@ def test_two_list_fields_fail_collected():
 
     entry = make_worker("TwoListEntry")
     p1 = make_worker("TwoListP1")
+    p2 = make_worker("TwoListP2")
     reducer = make_worker("TwoListReducer", prompt="reduce {reviews}", input_type=TwoLists)
 
     with pytest.raises(ConfigError, match="exactly one list"):
@@ -1007,12 +1008,16 @@ def test_two_list_fields_fail_collected():
             output_type = Out
 
             def build(self, g):
-                for n in (entry, p1, reducer):
+                for n in (entry, p1, p2, reducer):
                     g.add_node(n)
                 g.add_edge(START, entry)
+                # Equal-depth plain-edge parents (both depth 1) so the
+                # join-depth check is satisfied and the two-list-form rule
+                # is what fires.
                 g.add_edge(entry, p1)
-                g.add_edge(entry, reducer)
+                g.add_edge(entry, p2)
                 g.add_edge(p1, reducer)
+                g.add_edge(p2, reducer)
                 g.add_edge(reducer, END)
 
 
@@ -1039,6 +1044,7 @@ def test_human_multi_parent_fails():
     )
     a = make_worker("HumanParentA")
     b = make_worker("HumanParentB")
+    c = make_worker("HumanParentC")
 
     with pytest.raises(ConfigError, match="at most one parent"):
 
@@ -1047,12 +1053,15 @@ def test_human_multi_parent_fails():
             output_type = Out
 
             def build(self, g):
-                for n in (a, b, human):
+                for n in (a, b, c, human):
                     g.add_node(n)
                 g.add_edge(START, a)
+                # Equal-depth parents (both depth 1) so the join-depth check
+                # is satisfied and the human single-parent rule is what fires.
                 g.add_edge(a, b)
-                g.add_edge(a, human)
+                g.add_edge(a, c)
                 g.add_edge(b, human)
+                g.add_edge(c, human)
                 g.add_edge(human, END)
 
 

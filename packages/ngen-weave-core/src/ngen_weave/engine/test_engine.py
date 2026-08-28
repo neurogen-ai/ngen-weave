@@ -358,7 +358,7 @@ async def test_resume_on_completed_run_is_noop(tmp_path):
     assert len(engine.store.load(result.run_id).records) == before
 
 
-async def test_named_slot_fanin_assembles_inputs(tmp_path):
+async def test_named_slot_fanin_unequal_depth_compile_error(tmp_path):
     a = make_worker("A", Root, Piece, prompt="a sees {text}")
     b = make_worker("B", Piece, Piece, prompt="b sees {text}")
 
@@ -378,19 +378,18 @@ async def test_named_slot_fanin_assembles_inputs(tmp_path):
         g.add_edge(b, synth, into="second")
         g.add_edge(synth, END)
 
-    chain = type("Slotted", (Workflow,), {"input_type": Root, "output_type": Final, "build": build})
-    register(chain, "test")
-    engine, provider = make_engine(
-        ['{"text":"p1"}', '{"text":"p2"}', '{"text":"merged-out"}'], tmp_path
-    )
+    make_engine(['{"text":"p1"}'], tmp_path)
 
-    result = await engine.run(chain, Root(text="hi"))
-    assert result.status == "completed"
-    third_prompt = provider.calls[2][0][0]["content"]
-    assert third_prompt == "merged p1 with p2"
+    # A sits at depth 0, B at depth 1; unequal-depth fan-in is a compile error
+    # raised at class creation by import-time validation.
+    with pytest.raises(
+        ConfigError,
+        match=r"Synth has parents at different depths.*\.A at depth 0, .*\.B at depth 1",
+    ):
+        type("Slotted", (Workflow,), {"input_type": Root, "output_type": Final, "build": build})
 
 
-async def test_collected_fanin_assembles_list_field(tmp_path):
+async def test_collected_fanin_unequal_depth_compile_error(tmp_path):
     r1 = make_worker("R1", Root, Piece)
     r2 = make_worker("R2", Piece, Piece)
     r3 = make_worker("R3", Piece, Piece)
@@ -413,18 +412,17 @@ async def test_collected_fanin_assembles_list_field(tmp_path):
         g.add_edge(r3, reducer)
         g.add_edge(reducer, END)
 
-    chain = type(
-        "Collected", (Workflow,), {"input_type": Root, "output_type": Final, "build": build}
-    )
-    register(chain, "test")
-    engine, provider = make_engine(
-        ['{"text":"a"}', '{"text":"b"}', '{"text":"c"}', '{"text":"final"}'], tmp_path
-    )
+    make_engine(['{"text":"a"}', '{"text":"b"}', '{"text":"c"}'], tmp_path)
 
-    result = await engine.run(chain, Root(text="hi"))
-    assert result.status == "completed"
-    last_prompt = provider.calls[3][0][0]["content"]
-    assert "a" in last_prompt and "b" in last_prompt and "c" in last_prompt
+    # The textbook relay diamond: reducer's parents R1 (depth 0), R2 and R3
+    # (depth 1) no longer align via relays; this is a compile error now.
+    with pytest.raises(
+        ConfigError,
+        match=r"Reduce has parents at different depths.*\.R1 at depth 0, .*\.R2 at depth 1",
+    ):
+        type(
+            "Collected", (Workflow,), {"input_type": Root, "output_type": Final, "build": build}
+        )
 
 
 async def test_dispatch_target_receives_sender_output(tmp_path):
@@ -807,8 +805,14 @@ class _ParentOut(BaseModel):
 
 
 def _build_marker_fanin(collector_attrs: dict):
-    """Three marker-emitting workers fanning into one list-collecting child."""
+    """Three marker-emitting workers fanning into one list-collecting child.
 
+    A seed pass-through puts every marker worker at one depth: multi-parent
+    fan-in requires equal-depth parents since relays were removed, and only
+    one edge from START is legal, so the seed fans out to all three.
+    """
+
+    seed = make_worker("Seed", Root, Root, prompt="seed {text}")
     w1 = make_worker("MW1", Root, _ParentOut, prompt="review {text}")
     w2 = make_worker("MW2", Root, _ParentOut, prompt="review {text}")
     w3 = make_worker("MW3", Root, _ParentOut, prompt="review {text}")
@@ -824,17 +828,19 @@ def _build_marker_fanin(collector_attrs: dict):
     register(collector_cls, "test")
 
     def build(self, g):
+        g.add_node(seed)
         g.add_node(w1)
         g.add_node(w2)
         g.add_node(w3)
         g.add_node(collector_cls)
-        g.add_edge(START, w1)
+        g.add_edge(START, seed)
+        g.add_edge(seed, w1)
+        g.add_edge(seed, w2)
+        g.add_edge(seed, w3)
         # Declaration order of the fan-in edges fixes assembly order:
-        # w1, then w2, then w3.
+        # w1, then w2, then w3. All parents sit at depth 1.
         g.add_edge(w1, collector_cls)
-        g.add_edge(w1, w2)
         g.add_edge(w2, collector_cls)
-        g.add_edge(w2, w3)
         g.add_edge(w3, collector_cls)
         g.add_edge(collector_cls, END)
 
@@ -848,6 +854,7 @@ def _build_marker_fanin(collector_attrs: dict):
 
 
 _REPLIES = [
+    '{"text":"seed"}',
     '{"text":"MARKER-1","sort_key":3}',
     '{"text":"MARKER-2","sort_key":1}',
     '{"text":"MARKER-3","sort_key":2}',
@@ -866,7 +873,7 @@ async def test_collected_fanin_preserves_every_marker_in_declaration_order(tmp_p
     result = await engine.run(chain, Root(text="hi"))
 
     assert result.status == "completed"
-    collector_prompt = provider.calls[3][0][0]["content"]
+    collector_prompt = provider.calls[4][0][0]["content"]
     # NO LOSS: every parent marker reaches the collector prompt exactly once.
     for i in (1, 2, 3):
         assert collector_prompt.count(f"MARKER-{i}") == 1
@@ -886,7 +893,7 @@ async def test_collected_fanin_is_deterministic_across_fresh_engines(tmp_path):
         engine, provider = make_engine(_REPLIES, tmp_path / f"run{i}")
         result = await engine.run(chain, Root(text="hi"))
         assert result.status == "completed"
-        prompts.append(provider.calls[3][0][0]["content"])
+        prompts.append(provider.calls[4][0][0]["content"])
 
     assert prompts[0] == prompts[1]
 
@@ -926,7 +933,7 @@ async def test_kill_and_resume_reproduces_byte_identical_prompts(tmp_path):
 
     # The collector saw identical bytes whether the run went straight
     # through or was killed after the first level and replayed.
-    assert resumed_provider.calls[3][0][0]["content"] == fresh_provider.calls[3][0][0]["content"]
+    assert resumed_provider.calls[4][0][0]["content"] == fresh_provider.calls[4][0][0]["content"]
 
 
 async def test_collect_order_sort_key_reorders_fanin(tmp_path):
@@ -940,7 +947,7 @@ async def test_collect_order_sort_key_reorders_fanin(tmp_path):
 
     result = await engine.run(chain, Root(text="hi"))
     assert result.status == "completed"
-    collector_prompt = provider.calls[3][0][0]["content"]
+    collector_prompt = provider.calls[4][0][0]["content"]
     # collect_order="sort_key": values are MARKER-1:3, MARKER-2:1,
     # MARKER-3:2, so sorted order is MARKER-2 < MARKER-3 < MARKER-1.
     positions = [collector_prompt.index(f"MARKER-{i}") for i in (2, 3, 1)]

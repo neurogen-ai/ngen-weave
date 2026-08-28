@@ -758,6 +758,81 @@ def _resolve_schema_path(model: type[BaseModel], path: str) -> bool:
     return True
 
 
+def _back_edges(edges: list[tuple[str, str]]) -> set[tuple[str, str]]:
+    """Edges whose target is an unfinished ancestor in a DFS from START."""
+    adjacency: dict[str, list[str]] = {}
+    for src, dst in edges:
+        adjacency.setdefault(src, []).append(dst)
+    color: dict[str, int] = {}  # 1 gray, 2 black
+    back: set[tuple[str, str]] = set()
+
+    def visit(node: str) -> None:
+        color[node] = 1
+        for nxt in adjacency.get(node, ()):
+            if color.get(nxt) == 1:
+                back.add((node, nxt))
+            elif color.get(nxt) is None:
+                visit(nxt)
+        color[node] = 2
+
+    visit(START)
+    return back
+
+
+def _levels(nodes: set[str], edges: list[tuple[str, str]]) -> dict[str, int]:
+    """Longest-path depth per node over non-back static edges.
+
+    START sits at -1 so its entry child lands at level 0. Used by the
+    compile-time join-depth check: LangGraph fires a join target once per
+    superstep, so every static parent chain must reach the target in the
+    same number of hops.
+    """
+    back = _back_edges(edges)
+    live = [(s, d) for s, d in edges if (s, d) not in back and d != END]
+    level = {n: 0 for n in nodes}
+    changed = True
+    guard = 0
+    while changed:  # Bellman-style relaxation; acyclic after back-edge removal
+        changed = False
+        guard += 1
+        if guard > len(nodes) + 2:
+            break  # pragma: no cover - defensive
+        for src, dst in live:
+            base = -1 if src == START else level[src]
+            if level[dst] < base + 1:
+                level[dst] = base + 1
+                changed = True
+    return level
+
+
+def _check_join_depth(
+    w: _Wiring,
+    path: str,
+    dst: str,
+    ordinary: list[tuple[str, str]],
+) -> None:
+    """Multi-parent join target: ordinary static parents share one depth.
+
+    START pseudo-parents are exempt — they deliver the seeded input before
+    any node runs and never race a join. Violation means LangGraph would
+    fire the target mid-chain with parents still unwritten; the relay
+    alignment that used to paper over this was removed (Branch D, Step 6).
+    See plans/design/loops-and-joins.md.
+    """
+    if len(ordinary) < 2:
+        return
+    levels = _levels(set(w.nodes), [(s, d) for s, d, _into in w.edges])
+    depths = {src: levels[src] for src, _f in ordinary}
+    distinct = sorted(set(depths.values()))
+    if len(distinct) > 1:
+        detail = ", ".join(f"{src} at depth {depth}" for src, depth in sorted(depths.items()))
+        raise ConfigError(
+            f"{path}: join target {dst} has parents at different depths "
+            f"({detail}); multi-parent fan-in requires equal-depth parents "
+            "(see plans/design/loops-and-joins.md)"
+        )
+
+
 def _check_multi_parent(
     w: _Wiring,
     cls: type[Workflow],
@@ -767,7 +842,8 @@ def _check_multi_parent(
     ordinary: list[tuple[str, str]],
     slots: list[tuple[str, str | None]],
 ) -> None:
-    """Multi-parent target: human cap, one declared form, then per-form rules."""
+    """Multi-parent target: join depth, human cap, one declared form, per-form rules."""
+    _check_join_depth(w, path, dst, ordinary)
     child_cls = w.nodes.get(dst)
     if child_cls is not None and issubclass(child_cls, Human):
         raise ConfigError(

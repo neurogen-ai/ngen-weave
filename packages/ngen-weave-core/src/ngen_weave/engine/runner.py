@@ -1,4 +1,4 @@
-"""LangGraph compilation and sequential workflow execution."""
+"""LangGraph compilation and workflow execution."""
 
 from __future__ import annotations
 
@@ -333,53 +333,19 @@ def _select_output(root_path: str, final: dict) -> dict:
     raise DataError(f"run finished without a terminal output on {root_path}")
 
 
-# --- leveling: relay insertion so joins wait for every parent -----------------
+def _wire_static_edges(builder: Any, wiring: _Wiring) -> None:
+    """Add static edges verbatim; conditional edges are wired elsewhere.
 
-
-def _back_edges(edges: list[tuple[str, str]]) -> set[tuple[str, str]]:
-    """Edges whose target is an unfinished ancestor in a DFS from START."""
-    adjacency: dict[str, list[str]] = {}
-    for src, dst in edges:
-        adjacency.setdefault(src, []).append(dst)
-    color: dict[str, int] = {}  # 1 gray, 2 black
-    back: set[tuple[str, str]] = set()
-
-    def visit(node: str) -> None:
-        color[node] = 1
-        for nxt in adjacency.get(node, ()):
-            if color.get(nxt) == 1:
-                back.add((node, nxt))
-            elif color.get(nxt) is None:
-                visit(nxt)
-        color[node] = 2
-
-    visit(START)
-    return back
-
-
-def _levels(nodes: set[str], edges: list[tuple[str, str]]) -> dict[str, int]:
-    """Longest-path depth per node over non-back static edges.
-
-    START sits at -1 so its entry child lands at level 0. Relays lift shorter
-    incoming paths so every parent chain reaches a joint target at the same
-    depth, which is what makes LangGraph fire the target exactly once.
+    Scheduling stays LangGraph-native: nodes fire when a trigger arrives and
+    multi-parent joins are restricted to equal-depth parents at compile time
+    (validation in ngen_weave.workflow), so no depth-alignment nodes are
+    inserted here.
     """
-    back = _back_edges(edges)
-    live = [(s, d) for s, d in edges if (s, d) not in back and d != END]
-    level = {n: 0 for n in nodes}
-    changed = True
-    guard = 0
-    while changed:  # Bellman-style relaxation; acyclic after back-edge removal
-        changed = False
-        guard += 1
-        if guard > len(nodes) + 2:
-            break  # pragma: no cover - defensive
-        for src, dst in live:
-            base = -1 if src == START else level[src]
-            if level[dst] < base + 1:
-                level[dst] = base + 1
-                changed = True
-    return level
+    for src, dst in [(s, d) for s, d, _into in wiring.edges]:
+        if dst == END:
+            builder.add_edge(src, END)
+        else:
+            builder.add_edge(src, dst)
 
 
 def _state_schema(wiring: _Wiring) -> type:
@@ -397,48 +363,18 @@ def _state_schema(wiring: _Wiring) -> type:
     return TypedDict("EngineState", fields, total=False)  # type: ignore[call-overload]
 
 
-def _wire_static_edges(builder: Any, wiring: _Wiring) -> None:
-    """Add static edges, inserting relay nodes so joins wait for every parent.
-
-    Relay nodes lift shorter parent chains to the target's depth; conditional
-    edges stay direct because dispatch re-entry is their purpose.
-    """
-    static_edges = [(s, d) for s, d, _into in wiring.edges]
-    levels = _levels(set(wiring.nodes), static_edges)
-    back = _back_edges(static_edges)
-    relay_seq = 0
-    for src, dst in static_edges:
-        if dst == END:
-            builder.add_edge(src, END)
-            continue
-        hops = 0
-        if (src, dst) not in back and src != START:
-            hops = max(0, levels[dst] - (levels[src] + 1))
-        elif src == START:
-            hops = max(0, levels[dst])
-        upstream = src
-        for _i in range(hops):
-            relay_seq += 1
-            relay_name = f"__relay_{relay_seq}__"
-
-            async def relay(state: dict) -> dict:
-                return {}
-
-            builder.add_node(relay_name, relay)
-            builder.add_edge(upstream, relay_name)
-            upstream = relay_name
-        builder.add_edge(upstream, dst)
-
-
 class Engine:
     """Compile, run, and resume workflows on LangGraph.
 
-    Sequential execution stays deterministic at any shape: multi-parent fan-in
-    targets fire exactly once via identity relays that align parent depths;
-    composites recurse eagerly under their own checkpoint namespaces and report
-    accumulated subtree usage upward, so per-scope RunMetadata attribution needs
-    no level special-casing. Human leaves park the run waiting_human until a
-    resume validates the submitted response and continues the superstep.
+    Execution is LangGraph-native: nodes fire when a trigger arrives and
+    superstep concurrency is LangGraph's. Determinism comes from compile-time
+    shape checks -- equal-depth multi-parent joins (see plans/design/
+    loops-and-joins.md), declaration-ordered collect assembly, and
+    single-sender dispatch through the last-wins channel. Composites recurse
+    eagerly under their own checkpoint namespaces and report accumulated
+    subtree usage upward, so per-scope RunMetadata attribution needs no level
+    special-casing. Human leaves park the run waiting_human until a resume
+    validates the submitted response and continues the superstep.
 
     Attributes:
         provider: Completion provider every model call goes through; exposes
@@ -765,9 +701,10 @@ class Engine:
     def _build_production_graph(self, wiring: _Wiring, ops: list, cell: dict[str, Any]) -> Any:
         """Replay recorded ops onto a StateGraph with per-key channels.
 
-        Relay nodes align parent depths on static edges so every multi-parent
-        target fires once, after all its parents wrote. Conditional edges stay
-        direct: dispatch re-entry is their purpose.
+        Static edges are wired verbatim; multi-parent targets fire once per
+        superstep under LangGraph's scheduling, with equal-depth parents
+        enforced at compile time. Conditional edges stay direct: dispatch
+        re-entry is their purpose.
         """
         from langgraph.graph import StateGraph
 
@@ -1448,7 +1385,7 @@ class Engine:
                     keys = set(chunk)
                     if "__interrupt__" in keys or compiled.wiring.nodes.keys().isdisjoint(keys):
                         # Halts resolve through the drive's waiting state;
-                        # relay steps write nothing.
+                        # every other update key is a wiring node.
                         continue
                     self._merge_update(final, chunk)
                     committed_now = self.store.usage_totals(run_id)[1]
