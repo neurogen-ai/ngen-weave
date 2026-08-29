@@ -384,7 +384,8 @@ class Engine:
         db_path: SQLite checkpoint database path.
         artifacts: Optional content-addressed store; workflows declaring
             artifacts persist nothing while it stays unset (tests mostly).
-        max_retries: Retries after the initial attempt for InfraError only.
+        max_retries: Retries after the initial attempt for AgentReplyError;
+        InfraError retries are capped separately by infra_max_retries.
         retry_backoff_ms: Exponential backoff base in milliseconds; each retry
             waits twice the previous delay.
         settings: Run-level settings carrying the run budget; limits live on
@@ -398,6 +399,7 @@ class Engine:
         checkpointer: str = "sqlite",
         db_path: Path = Path(".ngen-weave/checkpoints.db"),
         max_retries: int = 3,
+        infra_max_retries: int = 2,
         retry_backoff_ms: int = 1000,
         artifacts: ArtifactStore | None = None,
         settings: RunSettings | None = None,
@@ -409,6 +411,7 @@ class Engine:
         self.checkpointer = checkpointer
         self.db_path = Path(db_path)
         self.max_retries = max_retries
+        self.infra_max_retries = infra_max_retries
         self.retry_backoff_ms = retry_backoff_ms
         self._artifacts = artifacts
         self._settings = (
@@ -417,6 +420,7 @@ class Engine:
                 checkpointer=checkpointer,
                 db_path=db_path,
                 max_retries=max_retries,
+                infra_max_retries=infra_max_retries,
                 retry_backoff_ms=retry_backoff_ms,
             )
             if settings is not None
@@ -424,6 +428,7 @@ class Engine:
                 checkpointer=checkpointer,
                 db_path=db_path,
                 max_retries=max_retries,
+                infra_max_retries=infra_max_retries,
                 retry_backoff_ms=retry_backoff_ms,
             )
         )
@@ -973,19 +978,35 @@ class Engine:
     ) -> tuple[BaseModel, int]:
         """Execute one leaf under the retry policy, returning output and attempt count.
 
-        InfraError and AgentReplyError retry up to max_retries with exponential
-        backoff, each retry emitting a retry node_activation record; DataError
-        failures (including DeniedToolError) never retry. The attempt count is
-        the leaf's iterations for its ok record's metadata.
+        AgentReplyError retries up to max_retries; InfraError (transport-level
+        failures such as a wedged subprocess) retries only up to
+        infra_max_retries with exponential backoff, then re-raises with a
+        diagnosis so a persistent wedge fails the run loudly instead of
+        silently respawning until the trial timeout. DataError failures
+        (including DeniedToolError) never retry. The attempt count is the
+        leaf's iterations for its ok record's metadata.
         """
         attempt = 0
+        infra_attempt = 0
         while True:
             attempt += 1
             try:
                 return await self._execute_leaf(cls, path, model, ctx, usage, cell), attempt
-            except (InfraError, AgentReplyError):
+            except AgentReplyError:
                 if attempt > self.max_retries:
                     raise
+                ctx.emit("node_activation", {"status": "retry", "attempt": attempt})
+                await _sleep(self.retry_backoff_ms * 2 ** (attempt - 1) / 1000)
+            except InfraError as exc:
+                infra_attempt += 1
+                if infra_attempt > self.infra_max_retries:
+                    raise InfraError(
+                        f"{path}: persistent infrastructure failure after "
+                        f"{infra_attempt} attempts; failing loudly rather than "
+                        f"retrying (a wedged subprocess, dead endpoint, or "
+                        f"blocked dialog indicates an environment fault, not a "
+                        f"transient one)\ncause: {exc}"
+                    ) from exc
                 ctx.emit("node_activation", {"status": "retry", "attempt": attempt})
                 await _sleep(self.retry_backoff_ms * 2 ** (attempt - 1) / 1000)
 

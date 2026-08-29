@@ -12,6 +12,13 @@ max_calls, and budget_usd are NOT enforced while pi runs. Only use this
 executor on activations that are trusted with pi's full tool set (e.g. run it
 in a container or a scratch checkout).
 
+Dialogs: extension UI dialog methods (select/confirm/input/editor) emit an
+extension_ui_request and block until the client answers. A headless RPC agent
+has no human, so the event pump auto-responds: select picks "Allow" (or the
+first option), confirm confirms, input/editor cancel. Pass
+no_extensions=True to skip extension discovery entirely so packages whose
+adapters emit dialogs (e.g. MCP adapters with approval gates) never load.
+
 Metadata: each pi turn_end event maps to one model_call provenance record
 (variant None) carrying tokens_total, cost_usd, and duration_ms (wall time
 from turn_start), so budgets and observers still see per-turn token/cost
@@ -46,6 +53,10 @@ from ngen_weave.schema_errors import format_validation_error
 # bounds the whole activation (prompt plus any follow_up rounds), not one turn.
 DEFAULT_RPC_TIMEOUT_S = 600.0
 
+# Dialog methods block until answered; fire-and-forget methods (notify,
+# setStatus, setWidget, setTitle, set_editor_text) do not expect a response.
+_DIALOG_METHODS = ("select", "confirm", "input", "editor")
+
 
 class PiRpcAgentExecutor:
     """Runs one activation as a pi RPC session instead of a provider loop."""
@@ -59,18 +70,25 @@ class PiRpcAgentExecutor:
         session_dir: str | None = None,
         model: str | None = None,
         extra_args: tuple[str, ...] = (),
+        no_extensions: bool = False,
         timeout_s: float = DEFAULT_RPC_TIMEOUT_S,
     ) -> None:
         """Store launch configuration; provider is accepted and ignored.
 
         The provider parameter exists only so the executor fits the AgentNode
         factory hatch, which always calls factory(ctx.provider).
+        no_extensions launches pi with --no-extensions: extension discovery
+        (user packages, including MCP adapters that gate tool calls behind
+        approval dialogs) is disabled, so the session runs on pi's own tools
+        only. Explicit -e extensions would still load; dialogs from any that
+        slip through are auto-answered by the event pump regardless.
         """
         self._binary = binary
         self._cwd = cwd
         self._session_dir = session_dir
         self._model = model
         self._extra_args = tuple(extra_args)
+        self._no_extensions = no_extensions
         self._timeout_s = timeout_s
 
     async def execute(
@@ -136,6 +154,8 @@ class PiRpcAgentExecutor:
     def _command(self) -> list[str]:
         """Build the pi RPC argv for this executor's configuration."""
         argv = [self._binary, *self._extra_args, "--mode", "rpc"]
+        if self._no_extensions:
+            argv.append("--no-extensions")
         if self._session_dir is not None:
             argv += ["--session-dir", str(self._session_dir)]
         else:
@@ -266,9 +286,46 @@ class _RpcSession:
                 f"pi RPC process exited before settling: {' '.join(self._argv)}\n{tail}"
             )
         try:
-            return json.loads(line.decode().rstrip("\r\n"))
+            event = json.loads(line.decode().rstrip("\r\n"))
         except json.JSONDecodeError as exc:
             raise InfraError(f"pi emitted unparseable JSONL: {exc}: {line[:200]!r}") from exc
+        if (
+            event.get("type") == "extension_ui_request"
+            and event.get("method") in _DIALOG_METHODS
+        ):
+            # A dialog blocks pi until answered; a headless agent must never
+            # wedge here, so answer on its behalf and keep pumping for the
+            # real event. Fire-and-forget requests fall through and are
+            # discarded like any other event.
+            await self._respond_dialog(event)
+            return await self._readline()
+        return event
+
+    async def _respond_dialog(self, event: dict) -> None:
+        """Answer one extension UI dialog automatically (no human present).
+
+        select picks "Allow" when offered (the MCP-adapter approval shape)
+        and otherwise the first option; confirm confirms; input/editor cancel
+        rather than inject fabricated text. Mirrors docs/rpc.md: the response
+        id must match the request id.
+        """
+        assert self._proc is not None and self._proc.stdin is not None
+        method = event["method"]
+        if method == "select":
+            options = event.get("options") or []
+            value = "Allow" if "Allow" in options else (options[0] if options else None)
+            payload = (
+                {"value": value}
+                if value is not None
+                else {"cancelled": True}
+            )
+        elif method == "confirm":
+            payload = {"confirmed": True}
+        else:
+            payload = {"cancelled": True}
+        response = {"type": "extension_ui_response", "id": event["id"], **payload}
+        self._proc.stdin.write((json.dumps(response) + "\n").encode())
+        await self._proc.stdin.drain()
 
     @staticmethod
     def _emit_model_call(event: dict, ctx, duration_ms: int | None) -> None:

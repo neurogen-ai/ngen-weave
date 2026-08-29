@@ -45,6 +45,7 @@ class RunSettings:
     checkpointer: str = "sqlite"
     db_path: Path = Path(".ngen-weave/checkpoints.db")
     max_retries: int = 3
+    infra_max_retries: int = 2
     retry_backoff_ms: int = 1000
     budget: Budget | None = None
 

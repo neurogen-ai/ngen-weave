@@ -557,7 +557,38 @@ async def test_transient_infra_failure_recovers_within_budget(tmp_path, monkeypa
     assert len(retries) == 1
 
 
-# --- human nodes: artifacts, interrupts, resume ------------------------------
+async def test_persistent_infra_failure_caps_below_reply_retries(tmp_path, monkeypatch):
+    """InfraError has its own tighter cap: a persistent wedge fails loudly
+    with a diagnosis instead of respawning until max_retries (or worse, the
+    trial timeout) — e.g. a headless pi session blocked on an unanswered
+    dialog respawning identical failures forever."""
+    delays: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(ngen_runner, "_sleep", fake_sleep)
+    w1 = make_worker("W1", Root, Piece)
+    chain = make_chain([w1], Root, Piece)
+    provider = FlakyProvider(['{"text":"never"}'], fail_times=99)
+    engine = Engine(
+        provider,
+        RunStore(tmp_path / "runs"),
+        checkpointer="memory",
+        max_retries=5,
+        infra_max_retries=1,
+        retry_backoff_ms=5,
+    )
+
+    result = await engine.run(chain, Root(text="hi"))
+
+    assert result.status == "failed"
+    assert provider.calls.__len__() == 2  # initial attempt + one infra retry
+    assert delays == [0.005]
+    rf = engine.store.load(result.run_id)
+    assert rf.error is not None and rf.error["type"] == "InfraError"
+    assert "persistent infrastructure failure" in rf.error["message"]
+    assert "environment fault" in rf.error["message"]
 
 
 class Review(BaseModel):

@@ -104,6 +104,11 @@ def _pi_rpc_executor(provider=None, *, tools: tuple[str, ...]):
         binary="pi",
         cwd=os.environ.get("SWE_TOOLS_REPO_ROOT"),
         extra_args=("-t", ",".join(tools)),
+        # Headless workers need only the -t allowlist; extension discovery
+        # (user packages, e.g. MCP adapters whose approval dialogs would
+        # wedge a headless session) is disabled outright. Dialogs are also
+        # auto-answered by the RPC event pump as a belt-and-braces measure.
+        no_extensions=True,
     )
 
 # --- JSON prompt helper --------------------------------------------------------

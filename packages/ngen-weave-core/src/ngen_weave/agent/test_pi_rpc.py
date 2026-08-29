@@ -1,5 +1,6 @@
 """PiRpcAgentExecutor behavior: session pump, repair loop, error taxonomy."""
 
+import json
 import sys
 
 import pytest
@@ -12,7 +13,10 @@ from ngen_weave.workflow import RunContext
 # A fake pi: speaks the docs/rpc.md JSONL protocol from a scripted reply list.
 # Env: FAKE_PI_REPLY_1..N are the per-round last-assistant texts (1-indexed),
 # FAKE_PI_REJECT_PROMPT makes the prompt command fail, FAKE_PI_SLEEP delays the
-# first turn_end. One turn_end record is CRLF-terminated on purpose.
+# first turn_end, FAKE_PI_DIALOGS is a JSON list of extension_ui_request
+# objects emitted (in order) before agent_settled of round 1; each response
+# the client writes back is appended to FAKE_PI_DIALOG_LOG. One turn_end
+# record is CRLF-terminated on purpose.
 FAKE_PI = r"""
 import json, os, sys, time
 
@@ -21,6 +25,8 @@ while f"FAKE_PI_REPLY_{i}" in os.environ:
     replies.append(os.environ[f"FAKE_PI_REPLY_{i}"])
     i += 1
 sleep = float(os.environ.get("FAKE_PI_SLEEP", "0"))
+dialogs = json.loads(os.environ["FAKE_PI_DIALOGS"]) if "FAKE_PI_DIALOGS" in os.environ else []
+log_path = os.environ.get("FAKE_PI_DIALOG_LOG")
 round_no = 0
 
 def usage(n):
@@ -50,6 +56,13 @@ for line in sys.stdin:
             time.sleep(sleep)
         emit({"type": "turn_end", "message": {"role": "assistant", "usage": usage(round_no)},
               "toolResults": []}, crlf=True)
+        for di, dialog in enumerate(dialogs):
+            emit({"type": "extension_ui_request", "id": f"dialog-{di + 1}", **dialog})
+            if dialog.get("method") in ("select", "confirm", "input", "editor"):
+                resp = json.loads(sys.stdin.readline())
+                if log_path:
+                    with open(log_path, "a") as fh:
+                        fh.write(json.dumps(resp) + "\n")
         emit({"type": "agent_settled"})
     elif t == "follow_up":
         round_no += 1
@@ -165,3 +178,58 @@ def test_command_shape():
     ]
     assert PiRpcAgentExecutor()._command() == ["pi", "--mode", "rpc", "--no-session"]
     assert DEFAULT_RPC_TIMEOUT_S == 600.0
+
+
+def test_command_shape_no_extensions():
+    executor = PiRpcAgentExecutor(binary="pi", no_extensions=True)
+    assert executor._command() == ["pi", "--mode", "rpc", "--no-extensions", "--no-session"]
+
+
+async def test_dialogs_auto_answered_without_blocking(tmp_path, monkeypatch):
+    """Dialog methods must not wedge the pump: they are answered in-place."""
+    log = tmp_path / "dialog_log.jsonl"
+    apply_env(
+        monkeypatch,
+        FAKE_PI_REPLY_1='{"text": "done"}',
+        FAKE_PI_DIALOGS=json.dumps(
+            [
+                {"method": "select", "title": "Allow MCP tool?", "options": ["Allow", "Block"]},
+                {"method": "confirm", "title": "Sure?"},
+                {"method": "input", "title": "Type something"},
+                {"method": "editor", "title": "Edit this"},
+                {"method": "select", "title": "Pick any", "options": ["A", "B"]},
+            ]
+        ),
+        FAKE_PI_DIALOG_LOG=str(log),
+    )
+    executor, ctx, env = make_env(tmp_path)
+    out = await executor.execute("do it", _Out, None, None, ctx)
+    assert out == _Out(text="done")  # settled and validated despite dialogs
+    responses = [json.loads(line) for line in log.read_text().splitlines()]
+    assert responses == [
+        {"type": "extension_ui_response", "id": "dialog-1", "value": "Allow"},
+        {"type": "extension_ui_response", "id": "dialog-2", "confirmed": True},
+        {"type": "extension_ui_response", "id": "dialog-3", "cancelled": True},
+        {"type": "extension_ui_response", "id": "dialog-4", "cancelled": True},
+        {"type": "extension_ui_response", "id": "dialog-5", "value": "A"},
+    ]
+    # Provenance: only the real turn emitted a model_call, no wedge-induced extras.
+    assert [kind for kind, _ in env["emitted"]] == ["model_call"]
+
+
+async def test_fire_and_forget_dialogs_ignored(tmp_path, monkeypatch):
+    apply_env(
+        monkeypatch,
+        FAKE_PI_REPLY_1='{"text": "done"}',
+        FAKE_PI_DIALOGS=json.dumps(
+            [
+                {"method": "notify", "message": "blocked"},
+                {"method": "setTitle", "title": "pi - test"},
+            ]
+        ),
+        FAKE_PI_DIALOG_LOG=str(tmp_path / "dialog_log.jsonl"),
+    )
+    executor, ctx, _ = make_env(tmp_path)
+    out = await executor.execute("do it", _Out, None, None, ctx)
+    assert out == _Out(text="done")
+    assert not (tmp_path / "dialog_log.jsonl").exists()  # no responses written
