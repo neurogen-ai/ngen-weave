@@ -55,6 +55,7 @@ import json
 import os
 import re
 from functools import partial
+from pathlib import Path
 from typing import Any, ClassVar
 
 from ngen_weave.agent.node import AgentNode
@@ -83,6 +84,13 @@ from .cache import Cache, GateVerdict, carry_forward
 # SWE_TOOLS_REPO_ROOT, which is also where the subprocess runs. The factory
 # form resolves that env var lazily at activation time, matching tools.py.
 #
+# The subprocess is pinned to the same model the harness provider would call:
+# _resolve_rpc_model() reads the example package's models.json (the same file
+# ngw uses for its CompletionProvider), takes the variant's model id, and
+# prefixes pi's provider id for the llama.cpp router the variant's api_base
+# points at. Resolved at activation time, so editing models.json lands
+# without a restart.
+#
 # Each activation narrows pi's own tool surface via the -t allowlist:
 # scouting and review are read-only work (bash/ls/grep/find), the dev worker
 # additionally edits files (edit/write). There is no dedicated read tool in
@@ -90,6 +98,56 @@ from .cache import Cache, GateVerdict, carry_forward
 
 _INSPECT_TOOLS = ("bash", "ls", "grep", "find")
 _DEV_TOOLS = ("bash", "ls", "grep", "edit", "write")
+
+_MODELS_FILE_ENV = "SWE_TOOLS_MODELS_FILE"
+_PI_PROVIDER_ENV = "SWE_TOOLS_PI_PROVIDER"
+_PI_VARIANT_ENV = "SWE_TOOLS_PI_VARIANT"
+
+# pi addresses a llama.cpp router server through its built-in "llama.cpp"
+# provider id (pi docs/llama-cpp.md); the router's model ids are the Hugging
+# Face owner/repo[:quant] strings models.json already carries.
+_DEFAULT_PI_PROVIDER = "llama.cpp"
+
+
+def _models_file() -> Path:
+    """Locate the example package's models.json (env override first)."""
+
+    env_path = os.environ.get(_MODELS_FILE_ENV)
+    if env_path:
+        return Path(env_path)
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "models.json"
+        if candidate.is_file():
+            return candidate
+    raise ConfigError(
+        f"{_MODELS_FILE_ENV} is unset and no models.json was found above "
+        f"{here}; set {_MODELS_FILE_ENV} to the example package's models.json"
+    )
+
+
+def _resolve_rpc_model() -> str:
+    """Build the pi --model value from the example package's models.json.
+
+    Reads the same variant file ngw uses (defaultVariant -> variants), picks
+    the variant's 'model' id, and prefixes pi's provider id so the RPC
+    subprocess selects the model the harness provider would call.
+    """
+
+    path = _models_file()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"cannot read models file {path}: {exc}") from exc
+    variants = data.get("variants")
+    if not isinstance(variants, dict) or not variants:
+        raise ConfigError(f"{path}: 'variants' must be a non-empty mapping")
+    variant = os.environ.get(_PI_VARIANT_ENV) or data.get("defaultVariant")
+    entry = variants.get(variant)
+    if not isinstance(entry, dict) or not entry.get("model"):
+        raise ConfigError(f"{path}: variant {variant!r} needs a 'model' key")
+    provider = os.environ.get(_PI_PROVIDER_ENV) or _DEFAULT_PI_PROVIDER
+    return f"{provider}/{entry['model']}"
 
 # Max failed rounds of the StepPlan -> ScoutAgent -> ScoutCheckGate loop.
 # Past this the scout gate passes with open questions attached for the dev
@@ -103,6 +161,7 @@ def _pi_rpc_executor(provider=None, *, tools: tuple[str, ...]):
         provider,
         binary="pi",
         cwd=os.environ.get("SWE_TOOLS_REPO_ROOT"),
+        model=_resolve_rpc_model(),
         extra_args=("-t", ",".join(tools)),
         # Headless workers need only the -t allowlist; extension discovery
         # (user packages, e.g. MCP adapters whose approval dialogs would
