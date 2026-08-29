@@ -10,27 +10,48 @@ PlanSWETask:
     START -> PlanDraft -> PlanGate --pass--> END
                         --fail--> PlanRework -> END
 
-    PlanRework does not loop back into the planner: it grills the agent who
-    invoked the workflow about where the plan leaves gaps, with pointed
-    questions and the scouting it owes. The caller answers on the next
-    invocation by feeding those answers in as clarifications.
+    The planner emits a structured step list (id, summary, files_expected,
+    depends_on, completion_check per step), not one blob. PlanGate checks the
+    structure programmatically (>= 2 steps, valid DAG, checkable completion
+    criterion per step) and asks the model only whether each step is
+    single-context-window sized; a one-giant-step plan fails the gate. On
+    failure PlanRework does not loop back into the planner: it grills the
+    agent who invoked the workflow about where the plan leaves gaps, with
+    pointed questions and the scouting it owes. The caller answers on the
+    next invocation by feeding those answers in as clarifications. The run
+    returns the step list only: ids and one-line summaries, no scout
+    evidence, no code.
 
 ImplementPlanStep:
 
     START -> StepGate --pass--> StepPlan -> PlanDetailGate --pass--> StepScout
-                      --fail--> StepClarify --cond--> StepPlan
+                      --fail--> END
                                         --fail--> PlanRefine --cond--> StepPlan
-                      (detail gate)          StepScout -> ScoutCheckGate
-                      --pass--> DevAgent -> ReviewerWorker -> END
+                      (detail gate)     StepScout -> ScoutCheckGate
+                      --pass--> DevAgent -> ReviewerWorker -> StepRecorder -> END
                       --fail--> ScoutClarify --cond--> StepPlan
-                      --fail(fail_count >= ORACLE_AFTER)--> Oracle -> END
 
-    The entry gate only passes a single part of the overall plan, specific
-    enough to implement. The plan->scout loop (StepPlan -> PlanDetailGate ->
-    StepScout -> ScoutCheckGate -> ScoutClarify -> StepPlan) exits only once
-    the scout check gate is sure the plan cites enough evidence from the
-    scout that it can be implemented well, step by step, to achieve the
-    meta-plan instruction given to this workflow.
+    The entry gate is a programmatic predicate over the cached plan (zero LLM
+    calls): the input must reference exactly one step_id from the cached plan,
+    that step's dependencies must be marked done in the cache's step_status
+    map, and the step must not already be implemented. A failed gate ends the
+    run with the reason in gate_notes instead of burning an inner clarify
+    round-trip; the caller fixes its input and re-invokes.
+
+    The plan->scout loop (StepPlan -> PlanDetailGate -> StepScout ->
+    ScoutCheckGate -> ScoutClarify -> StepPlan) exits once the plan is safe to
+    start: it names concrete files/symbols for this step alone and lists its
+    residual unknowns explicitly. After SCOUT_ROUNDS_MAX failed rounds the
+    scout gate passes with the open questions attached in gate_notes, and the
+    DevAgent verifies those unknowns against the code at write-time, where
+    verification is cheap. Prior steps' review reports reach the DevAgent
+    through the cache's step_status records, not through the top agent's
+    context.
+
+    StepRecorder persists per-step {status, reviewer_verdict, files_touched}
+    into the cache's step_status map, so the caller's loop over steps is
+    mechanical ("next incomplete step") and partial-progress telemetry
+    survives even if a trial dies at the timeout.
 """
 
 from __future__ import annotations
@@ -46,7 +67,6 @@ from ngen_weave.workflow import (
 from .cache import Cache
 from .nodes import (
     DevAgent,
-    Oracle,
     PlanDetailGate,
     PlanDraft,
     PlanGate,
@@ -56,17 +76,10 @@ from .nodes import (
     ScoutAgent,
     ScoutCheckGate,
     ScoutClarify,
-    StepClarify,
     StepGate,
     StepPlan,
+    StepRecorder,
 )
-
-ORACLE_AFTER = 3
-
-
-def _go_router(state: dict) -> str:
-    """Constant router: dispatch the sender's output to its single target."""
-    return "go"
 
 
 def _plan_router(state: dict) -> str:
@@ -86,24 +99,31 @@ def _detail_router(state: dict) -> str:
 
 def _scout_check_router(state: dict) -> str:
     verdict = state[workflow_class_path(ScoutCheckGate)]
-    if verdict["pass"]:
-        return "dev"
-    return "oracle" if verdict["fail_count"] >= ORACLE_AFTER else "replan"
+    # Forced passes after SCOUT_ROUNDS_MAX arrive here already marked pass;
+    # the open questions ride in gate_notes for the DevAgent.
+    return "dev" if verdict["pass"] else "replan"
+
+
+def _go_router(state: dict) -> str:
+    """Constant router: dispatch the sender's output to its single target."""
+    return "go"
 
 
 class PlanSWETask(Workflow):
-    """Turn an instruction into a gated plan of single-window steps."""
+    """Turn an instruction into a gated, structured list of single-window steps."""
 
     description = (
-        "Plan a SWE task: draft a discrete single-context-window plan that "
-        "achieves the instruction with no knowledge gaps, gate it for "
-        "sufficiency, and on failure grill the caller about the gaps."
+        "Plan a SWE task: draft a structured step list (id, summary, files, "
+        "dependencies, completion check per step) that achieves the "
+        "instruction with no knowledge gaps, gate it for multi-step structure "
+        "and per-step sizing, and on failure grill the caller about the gaps."
     )
     human_description = (
         "Drafts a plan of concrete, directive steps that achieve the "
-        "instruction, gates it on being sufficient to implement, and on "
-        "failure returns pointed questions back to the calling agent, "
-        "including the scouting the caller still owes."
+        "instruction, gates it on being a multi-step plan sized one context "
+        "window per step, and on failure returns pointed questions back to "
+        "the calling agent, including the scouting the caller still owes. "
+        "Returns the step list only: ids and one-line summaries."
     )
     input_type = Cache
     output_type = Cache
@@ -125,27 +145,28 @@ class PlanSWETask(Workflow):
 
 
 class ImplementPlanStep(Workflow):
-    """Implement one plan step: gate, plan detail, scout answers, dev, review."""
+    """Implement one plan step: programmatic gate, bounded scouting, dev, review."""
 
     description = (
-        "Implement a plan step: gate that exactly one specific plan part was "
-        "fed in, plan detail with honest unknowns, and loop plan and scout "
-        "until the plan cites enough evidence to implement step by step "
-        "toward the meta-plan instruction, then write and review."
+        "Implement a plan step: gate programmatically that exactly one step "
+        "id from the cached plan was fed in and its dependencies are done, "
+        "plan detail with honest unknowns, loop plan and scout at most two "
+        "rounds until the plan is safe to start, then write, review, and "
+        "record the step's verdict in the cache."
     )
     human_description = (
-        "Checks exactly one specific plan step was fed in, drafts a plan with "
-        "honest unknowns, and scouts until the check gate is satisfied the "
-        "plan can be implemented well, step by step, to achieve the meta-plan "
-        "instruction. Then writes the code and returns a BLOCKING/MAJOR/MINOR "
-        "review of the diff against the step."
+        "Checks exactly one plan step was fed in (programmatic gate against "
+        "the cached plan), drafts a plan with honest unknowns, and scouts "
+        "until the plan is safe to start, at which point the dev agent "
+        "resolves any remaining open questions against the code while "
+        "writing. Returns a BLOCKING/MAJOR/MINOR review of the diff against "
+        "the step and persists the step's status in the cache."
     )
     input_type = Cache
     output_type = Cache
 
     def build(self, g: GraphBuilder) -> None:
         step_gate = StepGate()
-        step_clarify = StepClarify()
         step_plan = StepPlan()
         detail_gate = PlanDetailGate()
         plan_refine = PlanRefine()
@@ -154,10 +175,9 @@ class ImplementPlanStep(Workflow):
         scout_clarify = ScoutClarify()
         dev = DevAgent()
         reviewer = ReviewerWorker()
-        oracle = Oracle()
+        recorder = StepRecorder()
         for node in (
             step_gate,
-            step_clarify,
             step_plan,
             detail_gate,
             plan_refine,
@@ -166,13 +186,14 @@ class ImplementPlanStep(Workflow):
             scout_clarify,
             dev,
             reviewer,
-            oracle,
+            recorder,
         ):
             g.add_node(node)
 
         g.add_edge(START, step_gate)
-        g.add_conditional_edges(step_gate, _step_router, {"pass": step_plan, "fail": step_clarify})
-        g.add_conditional_edges(step_clarify, _go_router, {"go": step_plan})
+        g.add_conditional_edges(
+            step_gate, _step_router, {"pass": step_plan, "fail": END}
+        )
         g.add_edge(step_plan, detail_gate)
         g.add_conditional_edges(
             detail_gate, _detail_router, {"pass": step_scout, "fail": plan_refine}
@@ -182,9 +203,9 @@ class ImplementPlanStep(Workflow):
         g.add_conditional_edges(
             scout_check,
             _scout_check_router,
-            {"dev": dev, "replan": scout_clarify, "oracle": oracle},
+            {"dev": dev, "replan": scout_clarify},
         )
         g.add_conditional_edges(scout_clarify, _go_router, {"go": step_plan})
         g.add_edge(dev, reviewer)
-        g.add_edge(reviewer, END)
-        g.add_edge(oracle, END)
+        g.add_edge(reviewer, recorder)
+        g.add_edge(recorder, END)

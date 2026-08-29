@@ -37,6 +37,16 @@ Every mid-chain worker here is dispatch-only for exactly that reason; each
 composite's internal clarify loop runs one fixer round and then proceeds
 (re-gating the clarified result happens only where a counter can survive the
 loop, i.e. through dispatch-only re-entry).
+
+Gates are programmatic wherever the verdict is checkable without a model:
+StepGate validates the fed step against the cached plan structure with a
+Python predicate (zero LLM calls, the reason lands in gate_notes), PlanGate
+checks the plan's structure programmatically before asking the model the one
+question code cannot answer (per-step context-window sizing), and
+ScoutCheckGate bounds the scout loop at SCOUT_ROUNDS_MAX rounds, after which
+it passes with the open questions attached for the dev agent to resolve at
+write-time. StepRecorder persists per-step progress into the cache's
+step_status map after review, so the caller's loop over steps is mechanical.
 """
 
 from __future__ import annotations
@@ -45,7 +55,7 @@ import json
 import os
 import re
 from functools import partial
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from ngen_weave.agent.node import AgentNode
 from ngen_weave.agent.permissions import PermissionSet
@@ -80,6 +90,12 @@ from .cache import Cache, GateVerdict, carry_forward
 
 _INSPECT_TOOLS = ("bash", "ls", "grep", "find")
 _DEV_TOOLS = ("bash", "ls", "grep", "edit", "write")
+
+# Max failed rounds of the StepPlan -> ScoutAgent -> ScoutCheckGate loop.
+# Past this the scout gate passes with open questions attached for the dev
+# agent to resolve at write-time; certainty at plan time is not worth more
+# scout rounds.
+SCOUT_ROUNDS_MAX = 2
 
 
 def _pi_rpc_executor(provider=None, *, tools: tuple[str, ...]):
@@ -117,6 +133,102 @@ def _json_prompt(spec: dict) -> str:
     return _UNSENTINEL.sub(lambda m: "{" + m.group(1) + "}", text)
 
 
+# --- plan-structure helpers ----------------------------------------------------
+
+# First line of a review report: "Verdict: BLOCKING|MAJOR|MINOR|OK".
+_VERDICT_RE = re.compile(r"Verdict:\s*(BLOCKING|MAJOR|MINOR|OK)", re.IGNORECASE)
+
+# File paths in a dev diff summary; best effort, for the files_touched record.
+_FILE_RE = re.compile(
+    r"(?:[\w.\-]+/)*[\w.\-]+\.(?:py|js|ts|tsx|java|go|rs|c|h|cpp|hpp"
+    r"|md|json|ya?ml|toml|txt|sh)\b"
+)
+
+
+def _plan_steps(value: Any) -> list[dict]:
+    """Coerce the cache's `steps` field into a list of step dicts."""
+
+    if isinstance(value, str) and value.strip():
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return [s for s in value if isinstance(s, dict)]
+
+
+def _has_dependency_cycle(ids: list[str], steps: list[dict]) -> bool:
+    """Kahn's algorithm over depends_on; True when the graph has a cycle."""
+
+    deps_of = {step_id: set() for step_id in ids}
+    indegree = {step_id: 0 for step_id in ids}
+    for step, step_id in zip(steps, ids):
+        for dep in step.get("depends_on") or []:
+            if dep in deps_of and dep not in deps_of[step_id]:
+                deps_of[step_id].add(dep)
+                indegree[step_id] += 1
+    queue = [step_id for step_id, degree in indegree.items() if degree == 0]
+    seen = 0
+    while queue:
+        node = queue.pop()
+        seen += 1
+        for step_id, deps in deps_of.items():
+            if node in deps:
+                deps.discard(node)
+                indegree[step_id] -= 1
+                if indegree[step_id] == 0:
+                    queue.append(step_id)
+    return seen != len(ids)
+
+
+def _plan_structure_notes(steps: list[dict]) -> str:
+    """Programmatic structural check of a plan step list; '' means it passes.
+
+    Enforces: at least 2 steps (a one-giant-step plan fails), unique non-empty
+    ids, a summary and a checkable completion_check on every step, and
+    depends_on references that resolve into a DAG.
+    """
+
+    if len(steps) < 2:
+        return (
+            f"plan must have at least 2 steps; it has {len(steps)}. "
+            "A one-giant-step plan fails."
+        )
+    notes: list[str] = []
+    ids = [str(s.get("id", "")).strip() for s in steps]
+    if any(not step_id for step_id in ids):
+        notes.append("every step needs a non-empty id")
+    if len(set(ids)) != len(ids):
+        notes.append("step ids must be unique")
+    if any(not str(s.get("summary", "")).strip() for s in steps):
+        notes.append("every step needs a summary")
+    if any(not str(s.get("completion_check", "")).strip() for s in steps):
+        notes.append(
+            "every step needs a completion_check a reviewer can grade later"
+        )
+    known = {step_id for step_id in ids if step_id}
+    if any(
+        dep not in known
+        for s in steps
+        for dep in (s.get("depends_on") or [])
+    ):
+        notes.append("depends_on entries must reference existing step ids")
+    if not notes and _has_dependency_cycle(ids, steps):
+        notes.append("depends_on must form a DAG; it has a cycle")
+    return "; ".join(notes)
+
+
+def _extract_open_questions(text: str) -> str:
+    """Best-effort pull of the 'Open questions' section from a scout summary."""
+
+    marker = "open questions"
+    idx = text.lower().find(marker)
+    if idx == -1:
+        return ""
+    return text[idx : idx + 600].strip()
+
+
 # --- reply schemas: strict per-node produced fields --------------------------
 
 
@@ -124,13 +236,6 @@ class ClarifiedInstruction(BaseModel):
     """Scout fixer reply: rewritten instruction plus what was clarified."""
 
     instruction: str
-    clarifications: str = ""
-
-
-class StepClarified(BaseModel):
-    """Step fixer reply: rewritten plan step plus what was clarified."""
-
-    step: str
     clarifications: str = ""
 
 
@@ -146,8 +251,35 @@ class DevInstructionsReply(BaseModel):
     dev_instructions: str
 
 
+class PlanStep(BaseModel):
+    """One plan step: what it delivers, what it touches, what proves it done."""
+
+    id: str
+    summary: str
+    files_expected: list[str] = []
+    depends_on: list[str] = []
+    completion_check: str
+
+
+class PlanStepsReply(BaseModel):
+    """Plan worker reply: the plan as a structured step list, not one blob.
+
+    The gate and the entry gate of ImplementPlanStep check this structure
+    programmatically, so the shape is load-bearing: id, summary, files,
+    dependencies, and a checkable completion criterion per step.
+    """
+
+    steps: list[PlanStep]
+    dev_instructions: str = ""
+
+
 class PlanReply(BaseModel):
-    """Plan worker reply: the plan, plus implementation instructions if asked."""
+    """Step-plan worker reply: the step's implementation plan, plus notes.
+
+    Distinct from PlanStepsReply: this is the single-step implementation
+    plan drafted inside ImplementPlanStep, consumed as prose by the detail
+    and scout-check gates.
+    """
 
     plan: str
     dev_instructions: str = ""
@@ -171,11 +303,16 @@ class ReviewReportReply(BaseModel):
     review_report: str
 
 
-class OracleAdviceReply(BaseModel):
-    """Oracle reply: recommendations, plus an optionally adjusted objective."""
-
-    oracle_notes: str
-    instruction: str = ""
+BooleanVerdict = type(
+    "BooleanVerdict",
+    (BaseModel,),
+    {
+        "__annotations__": {"pass": bool},
+        "__module__": __name__,
+        "__qualname__": "BooleanVerdict",
+        "__doc__": "Model-judged gate reply: the bare verdict as JSON.",
+    },
+)
 
 
 # --- carry node bases ---------------------------------------------------------
@@ -243,6 +380,11 @@ class CarryGate(Workflow):
             return
         if cls.decide is not CarryGate.decide:
             return
+        if cls.__dict__.get("run") is not None:
+            # Model-mode gate that customizes run() (e.g. JsonGate); its
+            # subclasses still require a prompt because their verdicts render
+            # it, but a class shipping its own run() owns its prompt use.
+            return
         if getattr(cls, "prompt", None) is None:
             raise ConfigError(
                 f"{workflow_class_path(cls)}: model-mode CarryGate requires a prompt "
@@ -252,6 +394,33 @@ class CarryGate(Workflow):
     def decide(self, input: BaseModel) -> bool:
         """Programmatic predicate; when not overridden the prompt is model-judged."""
         raise NotImplementedError
+
+    async def _model_verdict(
+        self, input: BaseModel, ctx: RunContext, extra: dict | None = None
+    ) -> bool:
+        """Render the prompt, call the model, parse the JSON verdict.
+
+        Used by model-judged gates whose prompt is a JSON spec (via
+        _json_prompt): the model answers {"pass": true|false} instead of a
+        bare boolean word, which nudges JSON-shaped replies everywhere else.
+        `extra` adds view-only prompt fields (e.g. a pre-rendered steps list)
+        that do not live on the cache.
+        """
+
+        dump = input.model_dump()
+        dump.update(extra or {})
+        text = render_prompt(self.prompt or "", dump, ctx.node_path)
+        completion = await ctx.provider.complete([{"role": "user", "content": text}])
+        ctx.emit(
+            "model_call",
+            {
+                "variant": None,
+                "tokens_total": completion.tokens_total,
+                "cost_usd": completion.cost_usd,
+            },
+        )
+        produced = parse_output(BooleanVerdict, completion.text, ctx.node_path)
+        return getattr(produced, "pass")
 
     async def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
         if type(self).decide is not CarryGate.decide:
@@ -334,40 +503,73 @@ class CarryAgent(AgentNode):
 # --- gates --------------------------------------------------------------------
 
 
-class SpecGate(CarryGate):
+class JsonGate(CarryGate):
+    """Model-judged gate whose prompt is a JSON spec (via _json_prompt).
+
+    The model answers {"pass": true|false} in one JSON object; the verdict is
+    parsed strictly. JSON-shaped prompts nudge JSON-shaped replies everywhere,
+    so no gate asks for a bare boolean word.
+    """
+
+    async def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
+        verdict = await self._model_verdict(input, ctx)
+        produced = GateVerdict(
+            **{
+                "pass": verdict,
+                "fail_count": input.fail_count + (0 if verdict else 1),
+            }
+        )
+        return carry_forward(input, produced)
+
+
+class SpecGate(JsonGate):
     """Scout entry gate: is the instruction a clear, targeted-search question?"""
 
     description = "Gate on the instruction being specific enough to search."
-    prompt = (
-        "You are the scout's spec gate. Decide whether the instruction below "
-        "states a clear, specific question or objective that a targeted "
-        "codebase search can answer without guessing. It is specific enough "
-        "when it names concrete symbols, files, paths, or a checkable "
-        "deliverable, or states them derivably. Vague ambition ('make it "
-        "better', 'look at the code') is not specific.\n\n"
-        "Reply with exactly one word: the bare boolean true or false. Do not "
-        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
-        "boolean by downstream logic.\n\n"
-        "Instruction:\n{instruction}\n"
+    prompt = _json_prompt(
+        {
+            "role": "scout spec gate",
+            "task": (
+                "Decide whether the instruction below states a clear, "
+                "specific question or objective that a targeted codebase "
+                "search can answer without guessing. It is specific enough "
+                "when it names concrete symbols, files, paths, or a "
+                "checkable deliverable, or states them derivably. Vague "
+                "ambition ('make it better', 'look at the code') is not "
+                "specific."
+            ),
+            "response_type": "json",
+            "response_format": {"pass": "true or false"},
+            "rules": ["Reply with exactly one JSON object and nothing else."],
+            "input": {"instruction": "{instruction}"},
+        }
     )
 
 
-class DevSpecGate(CarryGate):
+class DevSpecGate(JsonGate):
     """Dev entry gate: are the implementation instructions concrete enough?"""
 
     description = "Gate on dev instructions naming abstractions and target files."
-    prompt = (
-        "You are the dev gate. Decide whether the instructions below are clear "
-        "enough to implement without weighing trade-offs: they should name the "
-        "abstractions to build, the files that should contain them, and what "
-        "is out of scope, or state these derivably. The instructions are a "
-        "boundary, not a line-by-line edit plan; judgement-free execution is "
-        "the bar. 'Improve the module' fails.\n\n"
-        "Reply with exactly one word: the bare boolean true or false. Do not "
-        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
-        "boolean by downstream logic.\n\n"
-        "Instruction:\n{instruction}\n\n"
-        "Dev instructions:\n{dev_instructions}\n"
+    prompt = _json_prompt(
+        {
+            "role": "dev gate",
+            "task": (
+                "Decide whether the instructions below are clear enough to "
+                "implement without weighing trade-offs: they should name the "
+                "abstractions to build, the files that should contain them, "
+                "and what is out of scope, or state these derivably. The "
+                "instructions are a boundary, not a line-by-line edit plan; "
+                "judgement-free execution is the bar. 'Improve the module' "
+                "fails."
+            ),
+            "response_type": "json",
+            "response_format": {"pass": "true or false"},
+            "rules": ["Reply with exactly one JSON object and nothing else."],
+            "input": {
+                "instruction": "{instruction}",
+                "dev_instructions": "{dev_instructions}",
+            },
+        }
     )
 
 
@@ -381,85 +583,255 @@ class ReviewValidityGate(CarryGate):
 
 
 class PlanGate(CarryGate):
-    """Plan gate: is this plan sufficient to implement the instruction?"""
+    """Plan gate: multi-step structure, then model-judged per-step sizing.
 
-    description = "Gate on the plan achieving the instruction with no gaps."
-    prompt = (
-        "You are the plan gate. Ask the questions that decide the "
-        "instruction's completion, then judge: is this plan sufficient to "
-        "implement them? It passes only when it achieves the instruction, "
-        "leaves no knowledge gaps, and every step is concrete and points the "
-        "implementer in a direction: a deliverable, the approach or files or "
-        "symbols to use, and how to verify it. A step that says 'explore', "
-        "'investigate', or defers to a scouting pass fails. A step that "
-        "needs a judgement call the plan has not pre-made is not discrete.\n\n"
-        "Reply with exactly one word: the bare boolean true or false. Do not "
-        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
-        "boolean by downstream logic.\n\n"
-        "Instruction:\n{instruction}\n\n"
-        "Plan:\n{plan}\n"
+    The structural criteria (>= 2 steps, valid DAG, checkable
+    completion_check per step) are checked programmatically and fail in
+    milliseconds with the reason in gate_notes. When the structure holds, the
+    model judges the one criterion code cannot: whether every step is
+    single-context-window sized and concrete enough to implement. The model
+    is given a JSON prompt spec and replies with a JSON verdict.
+    """
+
+    description = "Gate on the plan being a multi-step, single-window-sized plan."
+    prompt = _json_prompt(
+        {
+            "role": "plan gate",
+            "task": (
+                "Decide whether the step list below passes. It passes only "
+                "when: (1) the steps together achieve the instruction with "
+                "no knowledge gaps; (2) every step is single-context-window "
+                "sized, meaning its deliverable, the files it touches, and "
+                "its verification fit one working session without "
+                "re-scouting the whole repo; (3) each step is concrete and "
+                "points the implementer in a direction: a deliverable, the "
+                "approach or files or symbols to use, and how to verify it. "
+                "A step that says 'explore', 'investigate', or defers to a "
+                "scouting pass fails. A step that needs a judgement call "
+                "the plan has not pre-made is not discrete."
+            ),
+            "response_type": "json",
+            "response_format": {"pass": "true or false"},
+            "rules": [
+                "Reply with exactly one JSON object and nothing else.",
+                (
+                    "The step list's structure (step count, DAG, completion "
+                    "checks) was already verified programmatically; judge "
+                    "only concreteness and per-step sizing."
+                ),
+            ],
+            "input": {
+                "objective": "{instruction}",
+                "steps": "{steps_json}",
+            },
+        }
     )
+
+    async def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
+        steps_json = json.dumps(input.steps or [], indent=2)
+        notes = _plan_structure_notes(_plan_steps(input.steps))
+        if notes:
+            # Structural failure: no model call, fail in milliseconds.
+            produced = GateVerdict(**{"pass": False, "fail_count": input.fail_count + 1})
+            return carry_forward(input, produced).model_copy(
+                update={"gate_notes": notes, "steps_json": steps_json}
+            )
+        verdict = await self._model_verdict(input, ctx, extra={"steps_json": steps_json})
+        produced = GateVerdict(
+            **{
+                "pass": verdict,
+                "fail_count": input.fail_count + (0 if verdict else 1),
+            }
+        )
+        out = carry_forward(input, produced).model_copy(
+            update={"steps_json": steps_json}
+        )
+        if not verdict:
+            out = out.model_copy(
+                update={
+                    "gate_notes": (
+                        "gate model judged at least one step not "
+                        "single-context-window sized or not concrete enough"
+                    )
+                }
+            )
+        return out
 
 
 class StepGate(CarryGate):
-    """ImplementPlanStep entry gate: one plan part, specific enough to implement."""
+    """ImplementPlanStep entry gate: a programmatic predicate, not a model.
 
-    description = "Gate on exactly one plan part, specific enough to implement."
-    prompt = (
-        "You are the implementation gate. Ask: are my instructions specific "
-        "enough to implement, and was exactly one part of the agent's overall "
-        "plan fed into this workflow? The instructions below pass only when "
-        "they are a single plan part that states a clear deliverable and "
-        "names concrete files or abstractions where determinable. A bundle "
-        "of several plan parts, or the whole plan, is not one part and fails. "
-        "Instructions that ask the implementer to weigh trade-offs are also "
-        "not specific enough.\n\n"
-        "Reply with exactly one word: the bare boolean true or false. Do not "
-        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
-        "boolean by downstream logic.\n\n"
-        "Instructions:\n{step}\n"
-    )
+    decide() is a Python predicate over the cached plan (zero LLM calls, fails
+    in milliseconds): the input must reference exactly one step_id from the
+    cached plan, that step's dependencies must be marked done in step_status,
+    and the step must not already be implemented. On fail the reason lands in
+    gate_notes so the caller can fix its input instead of burning an inner
+    clarify round-trip; the workflow routes a failed gate straight to END.
+    """
+
+    description = "Gate on exactly one cached plan step, dependencies done."
+
+    def _evaluate(self, input: BaseModel) -> tuple[bool, str, str]:
+        """Return (verdict, reason, step_id)."""
+
+        steps = _plan_steps(input.steps)
+        if not steps:
+            return (
+                False,
+                "no plan in the cache; run PlanSWETask first and feed one of "
+                "its steps",
+                "",
+            )
+        matches = [
+            step
+            for step in steps
+            if str(step.get("id", "")).strip()
+            and re.search(
+                rf"\b{re.escape(str(step.get('id', '')).strip())}\b", input.step
+            )
+        ]
+        if len(matches) != 1:
+            ids = ", ".join(str(s.get("id", "")) for s in steps)
+            return (
+                False,
+                f"input must reference exactly one step id from the plan "
+                f"({ids}); it references {len(matches)}",
+                "",
+            )
+        step = matches[0]
+        step_id = str(step.get("id", "")).strip()
+        status = input.step_status if isinstance(input.step_status, dict) else {}
+        record = status.get(step_id) or {}
+        if record.get("status") == "done":
+            return False, f"step {step_id} is already implemented", step_id
+        undone = [
+            dep
+            for dep in (step.get("depends_on") or [])
+            if (status.get(dep) or {}).get("status") != "done"
+        ]
+        if undone:
+            return (
+                False,
+                f"step {step_id} depends on "
+                f"{', '.join(str(d) for d in undone)}, not marked done yet",
+                step_id,
+            )
+        return True, "", step_id
+
+    def decide(self, input: BaseModel) -> bool:
+        return self._evaluate(input)[0]
+
+    async def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
+        verdict, reason, step_id = self._evaluate(input)
+        produced = GateVerdict(
+            **{
+                "pass": verdict,
+                "fail_count": input.fail_count + (0 if verdict else 1),
+            }
+        )
+        out = carry_forward(input, produced)
+        update = {"gate_notes": reason} if reason else {}
+        if verdict:
+            update["step_id"] = step_id
+        return out.model_copy(update=update) if update else out
 
 
-class PlanDetailGate(CarryGate):
+class PlanDetailGate(JsonGate):
     """Gate on plan detail: concrete abstractions/files, honest unknowns."""
 
     description = "Gate on the plan naming abstractions/files and honest unknowns."
-    prompt = (
-        "You are the plan detail gate. Decide whether the implementation plan "
-        "below BOTH names concrete abstractions and their target files AND is "
-        "honest about unknowns: it must explicitly list open questions "
-        "wherever information is missing rather than papering over them. A "
-        "plan that speculates instead of listing what it does not know fails. "
-        "The plan is a boundary, not an edit plan: function bodies and "
-        "per-line edit instructions are not required.\n\n"
-        "Reply with exactly one word: the bare boolean true or false. Do not "
-        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
-        "boolean by downstream logic.\n\n"
-        "Plan:\n{plan}\n"
+    prompt = _json_prompt(
+        {
+            "role": "plan detail gate",
+            "task": (
+                "Decide whether the implementation plan below BOTH names "
+                "concrete abstractions and their target files AND is honest "
+                "about unknowns: it must explicitly list open questions "
+                "wherever information is missing rather than papering over "
+                "them. A plan that speculates instead of listing what it "
+                "does not know fails. The plan is a boundary, not an edit "
+                "plan: function bodies and per-line edit instructions are "
+                "not required."
+            ),
+            "response_type": "json",
+            "response_format": {"pass": "true or false"},
+            "rules": ["Reply with exactly one JSON object and nothing else."],
+            "input": {"plan": "{plan}"},
+        }
     )
 
 
 class ScoutCheckGate(CarryGate):
-    """Gate on the plan->scout loop: plan plus scout evidence suffices."""
+    """Gate on the plan->scout loop: safe to start, not complete certainty.
 
-    description = "Gate on the plan citing enough scout evidence to implement."
-    prompt = (
-        "You are the scout check gate. Decide whether the plan->scout loop "
-        "may exit: only when the implementation plan, read together with the "
-        "scout summary, can be implemented well, step by step, to achieve "
-        "the meta instruction below. Every part of the plan must cite "
-        "concrete evidence from the scout summary: exact file paths, "
-        "symbols, or line ranges that tell the implementer what to change "
-        "and how. If any part still rests on 'likely' or would send the "
-        "implementer scouting, fail.\n\n"
-        "Reply with exactly one word: the bare boolean true or false. Do not "
-        "wrap it in JSON, quotes, or any other text; the verdict is read as a "
-        "boolean by downstream logic.\n\n"
-        "Meta instruction:\n{instruction}\n\n"
-        "Plan:\n{plan}\n\n"
-        "Scout summary:\n{file_summary}\n"
+    The old exit criterion ("certain enough to implement well, step by step")
+    pushed the inner model to demand exhaustive verbatim evidence, so the loop
+    burned scout rounds. This gate passes when the plan is SAFE TO START: it
+    names concrete files/symbols for this step alone and lists its residual
+    unknowns explicitly. The dev agent verifies those unknowns against the
+    code at write-time, where verification is cheap. After SCOUT_ROUNDS_MAX
+    failed rounds the gate passes anyway with the scout's open questions
+    attached in gate_notes, so the loop always exits.
+    """
+
+    description = "Gate on the plan being safe to start implementing."
+    prompt = _json_prompt(
+        {
+            "role": "scout check gate",
+            "task": (
+                "Decide whether the plan->scout loop may exit: only when the "
+                "implementation plan is SAFE TO START, not complete. It is "
+                "safe to start when the plan names concrete files and "
+                "symbols for THIS step alone and every residual unknown is "
+                "explicitly listed rather than papered over; the implementer "
+                "verifies listed unknowns against the code before editing. "
+                "Demanding verbatim evidence for the whole design makes the "
+                "loop never exit; fail only when the plan would send the "
+                "implementer scouting instead of editing."
+            ),
+            "response_type": "json",
+            "response_format": {"pass": "true or false"},
+            "rules": [
+                "Reply with exactly one JSON object and nothing else.",
+                (
+                    "An explicit open-questions section is a sign of an "
+                    "honest plan, not a failure; papering over unknowns is."
+                ),
+            ],
+            "input": {
+                "meta_instruction": "{instruction}",
+                "plan": "{plan}",
+                "scout_summary": "{file_summary}",
+            },
+        }
     )
+
+    async def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
+        verdict = await self._model_verdict(input, ctx)
+        if verdict:
+            produced = GateVerdict(**{"pass": True, "fail_count": input.fail_count})
+            return carry_forward(input, produced)
+        rounds = input.scout_fail_count + 1
+        if rounds < SCOUT_ROUNDS_MAX:
+            produced = GateVerdict(
+                **{"pass": False, "fail_count": input.fail_count + 1}
+            )
+            return carry_forward(input, produced).model_copy(
+                update={"scout_fail_count": rounds}
+            )
+        # Two scout rounds max, then pass with open questions attached.
+        open_questions = _extract_open_questions(input.file_summary)
+        produced = GateVerdict(**{"pass": True, "fail_count": input.fail_count + 1})
+        return carry_forward(input, produced).model_copy(
+            update={
+                "scout_fail_count": rounds,
+                "gate_notes": (
+                    f"forced pass after {rounds} scout rounds; the dev agent "
+                    "must verify these open questions against the code "
+                    f"before editing: {open_questions or 'see the scout summary'}"
+                ),
+            }
+        )
 
 
 # --- workers and agents --------------------------------------------------------
@@ -538,42 +910,55 @@ class DevClarify(CarryWorker):
 
 
 class PlanDraft(CarryWorker):
-    """PlanSWETask planner: concrete, directive, single-window steps."""
+    """PlanSWETask planner: emits a structured step list, not one blob.
 
-    description = "Draft a plan of discrete, concrete, directive steps."
-    parsed_type = PlanReply
+    The step list is load-bearing: PlanGate checks its structure
+    programmatically and ImplementPlanStep's StepGate matches the fed input
+    against it, so every step needs id, summary, files_expected, depends_on,
+    and a checkable completion_check.
+    """
+
+    description = "Draft a plan as a structured list of gated steps."
+    parsed_type = PlanStepsReply
     prompt = _json_prompt(
         {
             "role": "planner",
             "task": (
-                "Draft a plan for the objective below. Each step stands "
-                "alone, states a concrete deliverable and how to verify it, "
-                "and fits one context window. Every step points the "
-                "implementer in a direction: name the approach, the files or "
-                "symbols to touch, and what done looks like, so no step ends "
-                "with 'go find out'. The plan achieves the instruction, not a "
-                "loose reading of it, and leaves no knowledge gaps: every "
-                "ambiguity is resolved by a decision in the plan, never "
-                "deferred to a scouting pass. Consult the clarifications if "
-                "present."
+                "Draft a plan for the objective below as a list of steps. "
+                "Each step has: an id ('step-1', 'step-2', ...), a one-line "
+                "summary, the files it is expected to touch, the ids of the "
+                "steps it depends on, and a completion_check: a checkable "
+                "criterion a reviewer can grade later. Each step stands "
+                "alone and fits one context window. Every step points the "
+                "implementer in a direction: name the approach, the files "
+                "or symbols to touch, and what done looks like, so no step "
+                "ends with 'go find out'. The steps together achieve the "
+                "instruction, not a loose reading of it, and leave no "
+                "knowledge gaps: every ambiguity is resolved by a decision "
+                "in the plan, never deferred to a scouting pass. Consult "
+                "the clarifications if present."
             ),
             "response_type": "json",
             "response_format": {
-                "plan": "the numbered plan",
+                "steps": (
+                    "list of step objects: {id, summary, files_expected, "
+                    "depends_on, completion_check}"
+                ),
                 "dev_instructions": (
                     "optional implementation notes for the dev agent"
                 ),
             },
             "rules": [
                 "Reply with exactly one JSON object and nothing else.",
+                "At least 2 steps; depends_on must form a DAG.",
                 (
                     "The plan is a boundary, not an edit plan: no function "
                     "bodies, no per-file edit instructions."
                 ),
                 (
                     "No open questions and no explore steps: if information "
-                    "is missing, make the call from what the instruction and "
-                    "clarifications give."
+                    "is missing, make the call from what the instruction "
+                    "and clarifications give."
                 ),
             ],
             "input": {
@@ -599,16 +984,17 @@ class PlanRework(CarryWorker):
         {
             "role": "plan rework grill",
             "task": (
-                "The plan gate rejected the plan below: it does not achieve "
-                "the instruction, or it leaves knowledge gaps. Your reply "
-                "goes straight back to the agent who called this planner. "
-                "Poke them about where the gaps are: one pointed question per "
-                "gap, numbered, each with your recommended answer. Ask only "
-                "questions relevant to completing the instruction, and "
-                "address the question that decides everything: is this plan "
-                "sufficient to implement it? Tell them to provide more detail "
-                "and to do more scouting first if they do not know the "
-                "answers."
+                "The plan gate rejected the step list below: it does not "
+                "achieve the instruction, it leaves knowledge gaps, or it "
+                "failed the gate's structure check (the reason, if any, is "
+                "in gate_notes). Your reply goes straight back to the agent "
+                "who called this planner. Poke them about where the gaps "
+                "are: one pointed question per gap, numbered, each with "
+                "your recommended answer. Ask only questions relevant to "
+                "completing the instruction, and address the question that "
+                "decides everything: is this plan sufficient to implement "
+                "it? Tell them to provide more detail and to do more "
+                "scouting first if they do not know the answers."
             ),
             "response_type": "json",
             "response_format": {
@@ -631,48 +1017,9 @@ class PlanRework(CarryWorker):
             ],
             "input": {
                 "objective": "{instruction}",
-                "rejected_plan": "{plan}",
+                "rejected_steps": "{steps_json}",
+                "gate_notes": "{gate_notes}",
                 "answers_already_given": "{clarifications}",
-            },
-        }
-    )
-
-
-class StepClarify(CarryWorker):
-    """ImplementPlanStep entry fixer: sharpen the plan step itself."""
-
-    description = "Rewrite a vague plan step into a concrete deliverable."
-    parsed_type = StepClarified
-    prompt = _json_prompt(
-        {
-            "role": "step spec fixer",
-            "task": (
-                "The plan step failed the implementation gate: it is not "
-                "specific enough. Rewrite it into one concrete step with a "
-                "clear deliverable and, where determinable, the files or "
-                "abstractions it touches. Keep every original constraint; do "
-                "not invent facts."
-            ),
-            "response_type": "json",
-            "response_format": {
-                "step": "the rewritten step",
-                "clarifications": (
-                    "what you changed, and any information still missing"
-                ),
-            },
-            "rules": [
-                "Reply with exactly one JSON object and nothing else.",
-                "A rewrite that drops a constraint is a failure.",
-                (
-                    "If the instructions bundle several plan parts, reduce "
-                    "them to the single part this workflow should implement "
-                    "and list the remaining parts in clarifications so they "
-                    "can be fed back separately."
-                ),
-            ],
-            "input": {
-                "plan_step": "{step}",
-                "clarifications_so_far": "{clarifications}",
             },
         }
     )
@@ -847,52 +1194,6 @@ class ReviewerWorker(CarryAgent):
     }
 
 
-class Oracle(CarryWorker):
-    """Given the whole context after repeated gate failures, recommends next moves.
-
-    The engine's 0.2.x observers are pause-only ("reroute stays post-1.0"), so
-    an in-graph reroute on too many failures must be driven by a gate's
-    fail_count and router instead; Oracle is that reroute target. To run it
-    standalone, move this class into workflows.py (which registers it) and
-    point ngw.yaml at it.
-    """
-
-    description = "Recommends plan/instruction/tool adjustments after repeated failures."
-    parsed_type = OracleAdviceReply
-    prompt = _json_prompt(
-        {
-            "role": "oracle",
-            "task": (
-                "The workflow below failed its gate {fail_count} times. "
-                "Diagnose why: name the gate criterion that keeps going unmet "
-                "and the part of the context that keeps missing it. Then "
-                "recommend the smallest set of adjustments to the plan, the "
-                "instructions, or the tool approach that should follow. Do not "
-                "grow scope: a scope problem is resolved by cutting or "
-                "re-scouting, not by retrying harder."
-            ),
-            "response_type": "json",
-            "response_format": {
-                "oracle_notes": "diagnosis first, then recommended adjustments",
-                "instruction": "the adjusted objective, or the original if fine",
-            },
-            "rules": [
-                "Reply with exactly one JSON object and nothing else.",
-                (
-                    "Do not recommend the same approach that already failed; "
-                    "if retries cannot fix it, say so."
-                ),
-            ],
-            "input": {
-                "objective": "{instruction}",
-                "scout_summary": "{file_summary}",
-                "plan": "{plan}",
-                "clarifications": "{clarifications}",
-            },
-        }
-    )
-
-
 class ScoutAgent(CarryAgent):
     """Finds files and snippets answering the instruction; runs as a pi RPC session."""
 
@@ -940,7 +1241,14 @@ class ScoutAgent(CarryAgent):
 
 
 class DevAgent(CarryAgent):
-    """Writes the code per the dev instructions; runs as a pi RPC session."""
+    """Writes the code per the dev instructions; runs as a pi RPC session.
+
+    Residual unknowns left over from scouting are resolved HERE, at
+    write-time, not re-scouted: the agent has the read-only inspect tools to
+    verify each open question against the actual code before it edits.
+    Prior steps' review reports reach it through the cache's step_status
+    records, not through the repo history it would otherwise have to dig up.
+    """
 
     description = "Implement the dev instructions against the repo files."
     parsed_type = DevChangesReply
@@ -953,7 +1261,13 @@ class DevAgent(CarryAgent):
             "files. Read the carried context first, validate it against the "
             "actual code, then make the smallest correct change. Follow the "
             "patterns already in the codebase; the instructions are the "
-            "contract, but the code is the source of truth for what exists."
+            "contract, but the code is the source of truth for what exists. "
+            "If the context carries unresolved open questions from scouting "
+            "(gate_notes and the scout summary's open questions section), "
+            "verify each one against the actual code before you edit: you "
+            "resolve them at write-time, not by re-scouting broadly. If "
+            "step_status records prior steps' reviewer verdicts, read them "
+            "first so this step composes with what earlier steps committed."
         ),
         "response_type": "json",
         "rules": [
@@ -985,6 +1299,48 @@ class DevAgent(CarryAgent):
             "Risks and anything you had to decide yourself",
         ],
     }
+
+
+class StepRecorder(Workflow):
+    """Marks the reviewed step in the cache's step_status map.
+
+    Programmatic post-review node, zero LLM calls. It reads the step id the
+    StepGate matched, the reviewer's report, and the dev's diff summary, then
+    persists {status, reviewer_verdict, files_touched} for that step id. The
+    records ride the cache across the caller's sequential ImplementPlanStep
+    invocations, which makes the caller's loop over steps mechanical ('next
+    incomplete step') and leaves partial-progress telemetry behind if a trial
+    dies at the timeout.
+    """
+
+    _defer_validation = True
+
+    input_type = Cache
+    output_type = Cache
+
+    async def run(self, input: BaseModel, ctx: RunContext) -> BaseModel:
+        match = _VERDICT_RE.search(input.review_report)
+        if match:
+            verdict = match.group(1).upper()
+        elif "no issues found" in input.review_report.lower():
+            verdict = "OK"
+        else:
+            verdict = ""
+        status = {
+            "BLOCKING": "blocked",
+            "MAJOR": "partial",
+            "MINOR": "done",
+            "OK": "done",
+        }.get(verdict, "unknown")
+        files = sorted(set(_FILE_RE.findall(input.diff)))[:25]
+        records = dict(input.step_status) if isinstance(input.step_status, dict) else {}
+        if input.step_id:
+            records[input.step_id] = {
+                "status": status,
+                "reviewer_verdict": verdict,
+                "files_touched": files,
+            }
+        return input.model_copy(update={"step_status": records})
 
 
 # --- mid-level composites (hidden, reusable) -----------------------------------

@@ -19,6 +19,8 @@ dynamically.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict
 
 _CacheSpec = {
@@ -31,7 +33,23 @@ _CacheSpec = {
         "dev_instructions": str,
         "diff": str,
         "review_report": str,
-        "oracle_notes": str,
+        # PlanSWETask output: the plan as a structured step list
+        # (list of {id, summary, files_expected, depends_on, completion_check}).
+        "steps": Any,
+        # JSON rendering of the step list (set by PlanGate; a readable form
+        # for PlanRework and for the caller that returns to the top agent).
+        "steps_json": str,
+        # Per-step progress, keyed by step id:
+        # {id: {status, reviewer_verdict, files_touched}}. Persisted across the
+        # top agent's sequential ImplementPlanStep invocations.
+        "step_status": Any,
+        # The step id the StepGate matched (set on pass; read by StepRecorder).
+        "step_id": str,
+        # Why a programmatic gate failed, or a forced pass's open questions.
+        "gate_notes": str,
+        # Scout-check round counter (distinct from fail_count, which is shared
+        # by every gate in the run).
+        "scout_fail_count": int,
         "fail_count": int,
         "pass": bool,  # `pass` is a keyword: Cache is built via type().
     },
@@ -43,7 +61,12 @@ _CacheSpec = {
     "dev_instructions": "",
     "diff": "",
     "review_report": "",
-    "oracle_notes": "",
+    "steps": "",
+    "steps_json": "",
+    "step_status": "",
+    "step_id": "",
+    "gate_notes": "",
+    "scout_fail_count": 0,
     "fail_count": 0,
     "pass": False,
     "__module__": __name__,
@@ -51,8 +74,9 @@ _CacheSpec = {
     "__doc__": (
         "Carried context shared by every node in this package. All fields "
         "default; `pass` is the last gate verdict, `fail_count` its loop "
-        "counter, and unknown keys are preserved (extra='allow') so "
-        "arbitrary fields ride across edges."
+        "counter, `steps` the cached plan's structured step list, "
+        "`step_status` the persisted per-step progress, and unknown keys are "
+        "preserved (extra='allow') so arbitrary fields ride across edges."
     ),
     "model_config": ConfigDict(extra="allow"),
 }
