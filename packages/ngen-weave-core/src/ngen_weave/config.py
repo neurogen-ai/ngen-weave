@@ -121,7 +121,8 @@ def _load_variant_names(models_file: Path, source: Path) -> dict[str, Any]:
     """Load models.json and return its variant table; missing file is fatal here."""
     if not models_file.is_file():
         raise ConfigError(
-            f"{source}: models.json not found at {models_file} (referenced by the models section)"
+            f"{source}: models.json not found at {models_file} "
+            f"(referenced by the models section; server cwd: {Path.cwd()})"
         )
     data = json.loads(models_file.read_text())
     variants = data.get("variants")
