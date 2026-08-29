@@ -16,7 +16,7 @@ NGEN_WEAVE_DIR = Path(".ngen-weave")
 MANIFEST_NAME = "ngen-weave.json"
 
 # Provider turns before agent exhaustion; one turn yields exactly one action.
-MAX_TURNS = 3
+MAX_TURNS = 10
 
 # User-role message nudging the model to emit one valid JSON action after a bad reply.
 REPAIR_NUDGE = (
