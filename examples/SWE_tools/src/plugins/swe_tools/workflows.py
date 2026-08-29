@@ -1,11 +1,25 @@
 """Registry-visible workflows for the SWE_tools plugin.
 
 Only the classes DEFINED in this module are registered by discovery (see
-ngen-weave.json's module list): PlanSWETask and ImplementPlanStep. Every
-other leaf and mid-level composite lives in plugins.swe_tools.nodes, which
-no discovery channel lists.
+ngen-weave.json's module list): ScoutDir, PlanTask and ImplementPlanStep.
+Every other leaf and mid-level composite lives in plugins.swe_tools.nodes,
+which no discovery channel lists.
 
-PlanSWETask:
+ScoutDir:
+
+    START -> SpecGate --pass--> ScoutAgent -> END
+                      --fail--> Clarify --cond--> ScoutAgent
+
+    The caller's standalone read-only look at the repo: one question in, one
+    bounded summary out (file paths, key symbols, data flow, open questions).
+    It exists for the clarification phase of PlanTask, when PlanRework grills
+    the caller about gaps and tells them to do the scouting they owe. The
+    summary is summary-shaped on purpose: the scout returns paths, line
+    ranges, and one-line notes, not verbatim code, so the caller's context
+    stays small. Inside ImplementPlanStep, scouting happens where the code
+    gets written (StepScout feeds the inner plan->scout loop), not here.
+
+PlanTask:
 
     START -> PlanDraft -> PlanGate --pass--> END
                         --fail--> PlanRework -> END
@@ -17,10 +31,11 @@ PlanSWETask:
     single-context-window sized; a one-giant-step plan fails the gate. On
     failure PlanRework does not loop back into the planner: it grills the
     agent who invoked the workflow about where the plan leaves gaps, with
-    pointed questions and the scouting it owes. The caller answers on the
-    next invocation by feeding those answers in as clarifications. The run
-    returns the step list only: ids and one-line summaries, no scout
-    evidence, no code.
+    pointed questions and the scouting it owes (ScoutDir is the tool for
+    that). The caller answers on the next invocation by feeding those answers
+    in as clarifications. The run returns the step list only: ids and
+    one-line summaries, no scout evidence, no code. The list is designed to
+    be fed back to ImplementPlanStep one step at a time.
 
 ImplementPlanStep:
 
@@ -66,6 +81,7 @@ from ngen_weave.workflow import (
 
 from .cache import Cache
 from .nodes import (
+    Clarify,
     DevAgent,
     PlanDetailGate,
     PlanDraft,
@@ -76,6 +92,7 @@ from .nodes import (
     ScoutAgent,
     ScoutCheckGate,
     ScoutClarify,
+    SpecGate,
     StepGate,
     StepPlan,
     StepRecorder,
@@ -104,12 +121,62 @@ def _scout_check_router(state: dict) -> str:
     return "dev" if verdict["pass"] else "replan"
 
 
+def _scout_router(state: dict) -> str:
+    gate = state[workflow_class_path(SpecGate)]
+    return "pass" if gate["pass"] else "fail"
+
+
 def _go_router(state: dict) -> str:
     """Constant router: dispatch the sender's output to its single target."""
     return "go"
 
 
-class PlanSWETask(Workflow):
+def _proceed(state: dict) -> str:
+    """Constant router: dispatch the fixer's output to its single target."""
+    return "proceed"
+
+
+class ScoutDir(Workflow):
+    """Answer one question about the repo with a bounded read-only summary.
+
+    Registry-visible so the calling agent can scout its own gaps during
+    PlanTask's clarification phase, when PlanRework names the scouting it
+    still owes. The scout agent is instructed to return a summary, not
+    verbatim code, so the caller's context stays small; the heavy verbatim
+    evidence lives inside ImplementPlanStep's own scout loop, where the code
+    gets written.
+    """
+
+    description = (
+        "Scout the repo: gate that the question is specific enough for a "
+        "targeted search, clarify it if not, then search and return a "
+        "bounded summary of the files and snippets that answer it."
+    )
+    human_description = (
+        "Checks that the question is specific enough for a targeted search, "
+        "clarifies it if not, then lists and reads candidate files and "
+        "produces a summary of which files and snippets answer the question. "
+        "Read-only: returns file paths, line ranges, and one-line notes, "
+        "never verbatim code dumps."
+    )
+    input_type = Cache
+    output_type = Cache
+
+    def build(self, g: GraphBuilder) -> None:
+        spec_gate = SpecGate()
+        clarify = Clarify()
+        scout_agent = ScoutAgent()
+        for node in (spec_gate, clarify, scout_agent):
+            g.add_node(node)
+        g.add_edge(START, spec_gate)
+        g.add_conditional_edges(
+            spec_gate, _scout_router, {"pass": scout_agent, "fail": clarify}
+        )
+        g.add_conditional_edges(clarify, _proceed, {"proceed": scout_agent})
+        g.add_edge(scout_agent, END)
+
+
+class PlanTask(Workflow):
     """Turn an instruction into a gated, structured list of single-window steps."""
 
     description = (
@@ -123,7 +190,8 @@ class PlanSWETask(Workflow):
         "instruction, gates it on being a multi-step plan sized one context "
         "window per step, and on failure returns pointed questions back to "
         "the calling agent, including the scouting the caller still owes. "
-        "Returns the step list only: ids and one-line summaries."
+        "Returns the step list only: ids and one-line summaries, ready to be "
+        "fed to ImplementPlanStep one step at a time."
     )
     input_type = Cache
     output_type = Cache

@@ -33,7 +33,7 @@ _CacheSpec = {
         "dev_instructions": str,
         "diff": str,
         "review_report": str,
-        # PlanSWETask output: the plan as a structured step list
+        # PlanTask output: the plan as a structured step list
         # (list of {id, summary, files_expected, depends_on, completion_check}).
         "steps": Any,
         # JSON rendering of the step list (set by PlanGate; a readable form

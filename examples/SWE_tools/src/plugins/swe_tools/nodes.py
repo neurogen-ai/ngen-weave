@@ -3,7 +3,7 @@
 Everything here is deliberately NOT registry-visible: only
 `plugins.swe_tools.workflows` is listed for discovery, and discovery
 registers classes DEFINED in listed modules only (re-exports are skipped),
-so only PlanSWETask and ImplementPlanStep appear in the registry.
+so only ScoutDir, PlanTask and ImplementPlanStep appear in the registry.
 
 Node kinds
 ----------
@@ -742,7 +742,7 @@ class StepGate(CarryGate):
         if not steps:
             return (
                 False,
-                "no plan in the cache; run PlanSWETask first and feed one of "
+                "no plan in the cache; run PlanTask first and feed one of "
                 "its steps",
                 "",
             )
@@ -974,7 +974,7 @@ class DevClarify(CarryWorker):
 
 
 class PlanDraft(CarryWorker):
-    """PlanSWETask planner: emits a structured step list, not one blob.
+    """PlanTask planner: emits a structured step list, not one blob.
 
     The step list is load-bearing: PlanGate checks its structure
     programmatically and ImplementPlanStep's StepGate matches the fed input
@@ -1037,9 +1037,9 @@ class PlanRework(CarryWorker):
     """Plan fixer: grill the agent who called the planner about the gaps.
 
     Its output does not loop back into the planner: it ends the run, so the
-    agent who invoked PlanSWETask reads the questions, provides more detail,
-    does more scouting where it lacks knowledge, and re-invokes with its
-    answers as clarifications.
+    agent who invoked PlanTask reads the questions, provides more detail,
+    does more scouting (ScoutDir) where it lacks knowledge, and re-invokes
+    with its answers as clarifications.
     """
 
     description = "Grill the caller about where the plan leaves gaps."
@@ -1058,7 +1058,8 @@ class PlanRework(CarryWorker):
                 "completing the instruction, and address the question that "
                 "decides everything: is this plan sufficient to implement "
                 "it? Tell them to provide more detail and to do more "
-                "scouting first if they do not know the answers."
+                "scouting first if they do not know the answers. ScoutDir "
+                "is the tool they should run for the scouting they owe."
             ),
             "response_type": "json",
             "response_format": {

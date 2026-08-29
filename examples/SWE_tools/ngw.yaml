@@ -1,6 +1,6 @@
-workflow: plugins.swe_tools.workflows.PlanSWETask
+workflow: plugins.swe_tools.workflows.PlanTask
 params: {}
 models:
-  plugins.swe_tools.workflows.PlanSWETask: example-model
+  plugins.swe_tools.workflows.PlanTask: example-model
 run:
   checkpointer: memory
